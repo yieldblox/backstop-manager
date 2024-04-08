@@ -29,6 +29,7 @@ fn test_update_backstop() {
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
+        &contracts.bootstrapper.address,
     );
 
     let starting_blnd_balance: i128 = 100_000_0000000;

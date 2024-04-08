@@ -15,6 +15,7 @@ const BACKSTOP_KEY: &str = "Bstop";
 const BACKSTOP_TOKEN_KEY: &str = "BstopTkn";
 const IS_INIT_KEY: &str = "IsInit";
 const UNLOCK_KEY: &str = "Unlock";
+const BACKSTOP_BOOTSTRAPPER_KEY: &str = "BstopBootstrapper";
 
 /********** Ledger Thresholds **********/
 
@@ -82,6 +83,21 @@ pub fn set_unlock(e: &Env, unlock: u64) {
     e.storage()
         .instance()
         .set::<Symbol, u64>(&Symbol::new(e, UNLOCK_KEY), &unlock);
+}
+
+/// Get the backstop bootstrapper token
+pub fn get_backstop_bootstrapper(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get::<Symbol, Address>(&Symbol::new(e, BACKSTOP_BOOTSTRAPPER_KEY))
+        .unwrap()
+}
+
+/// Set the backstop bootstrapper token
+pub fn set_backstop_bootstrapper(e: &Env, bootstrapper: Address) {
+    e.storage()
+        .instance()
+        .set::<Symbol, Address>(&Symbol::new(e, BACKSTOP_BOOTSTRAPPER_KEY), &bootstrapper);
 }
 
 /********** Persistant **********/

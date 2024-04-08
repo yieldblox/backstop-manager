@@ -1,6 +1,7 @@
 use crate::{
     dependencies::{
-        backstop::Client as BackstopClient, comet::Client as CometClient,
+        backstop::Client as BackstopClient, bootstrapper::Bootstrap,
+        bootstrapper::Client as BootstrapClient, comet::Client as CometClient,
         emitter::Client as EmitterClient,
     },
     errors::BlendLockupError,
@@ -26,11 +27,18 @@ impl BlendLockup {
     /// ### Arguments
     /// * owner - The owner of the contract
     /// * emitter - The address of the emitter contract
+    /// * bootstrapper - The address of the backstop bootstrapper contract
     /// * unlock - The unlock time (in seconds since epoch)
     ///
     /// ### Errors
     /// * AlreadyInitializedError - The contract has already been initialized
-    pub fn initialize(e: Env, owner: Address, emitter: Address, unlock: u64) {
+    pub fn initialize(
+        e: Env,
+        owner: Address,
+        emitter: Address,
+        bootstrapper: Address,
+        unlock: u64,
+    ) {
         if storage::get_is_init(&e) {
             panic_with_error!(&e, BlendLockupError::AlreadyInitializedError);
         }
@@ -42,6 +50,7 @@ impl BlendLockup {
         storage::set_owner(&e, &owner);
         storage::set_emitter(&e, &emitter);
         storage::set_unlock(&e, unlock);
+        storage::set_backstop_bootstrapper(&e, bootstrapper);
 
         let backstop = EmitterClient::new(&e, &emitter).get_backstop();
         let backstop_token = BackstopClient::new(&e, &backstop).backstop_token();
@@ -351,5 +360,155 @@ impl BlendLockup {
             &min_amounts_out,
             &e.current_contract_address(),
         )
+    }
+
+    /***** Backstop Bootstrapper Interactions *****/
+
+    /// (Only Owner) Creates a Backstop Bootstrapping with BLND
+    ///
+    /// ### Arguments
+    /// * `bootstrap_token` - The address of the bootstrap token
+    /// * `bootstrap_amount` - The amount of tokens to bootstrap
+    /// * `pair_min` - The minimum amount of pool shares to mint
+    /// * `duration` - The duration of the bootstrapping period
+    /// * `pool_address` - The address of the pool
+    pub fn bb_start_bootstrap(
+        e: Env,
+        bootstrap_token_index: u32,
+        bootstrap_amount: i128,
+        pair_min: i128,
+        duration: u32,
+        pool_address: Address,
+    ) {
+        let owner = storage::get_owner(&e);
+        owner.require_auth();
+        storage::extend_instance(&e);
+
+        // backstop bootstrapper will only work with the first backstop token
+        let bootstrap_token: Address = match CometClient::new(
+            &e,
+            &storage::get_valid_backstop_tokens(&e)
+                .get(0)
+                .unwrap_optimized(),
+        )
+        .get_tokens()
+        .get(bootstrap_token_index)
+        {
+            Some(address) => address,
+            None => panic_with_error!(e, BlendLockupError::InvalidTokenIndex),
+        };
+
+        let backstop_bootstrapper = storage::get_backstop_bootstrapper(&e);
+        e.authorize_as_current_contract(vec![
+            &e,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: bootstrap_token,
+                    fn_name: Symbol::new(&e, "transfer"),
+                    args: vec![
+                        &e,
+                        e.current_contract_address().into_val(&e),
+                        backstop_bootstrapper.into_val(&e),
+                        bootstrap_amount.into_val(&e),
+                    ],
+                },
+                sub_invocations: vec![&e],
+            }),
+        ]);
+
+        BootstrapClient::new(&e, &backstop_bootstrapper).add_bootstrap(
+            &e.current_contract_address(),
+            &bootstrap_token_index,
+            &bootstrap_amount,
+            &pair_min,
+            &duration,
+            &pool_address,
+        );
+    }
+
+    /// (Only Owner) Claims the proceeds of a backstop bootstrapping
+    ///
+    /// ### Arguments
+    /// * `bootstrap_id` - The id of the bootstrapper
+    /// * `bootstrap_token_index` - The index of the token being bootstrapped (must match with claimed bootstrap)
+    pub fn bb_claim_bootstrap(e: Env, bootstrap_id: u32) {
+        let owner = storage::get_owner(&e);
+        owner.require_auth();
+        storage::extend_instance(&e);
+
+        let backstop_bootstrapper_client =
+            BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
+        let bootstrap: Bootstrap = backstop_bootstrapper_client
+            .get_bootstrap(&bootstrap_id, &e.current_contract_address());
+
+        // backstop bootstrapper will only work with the first backstop token
+        let comet_client = CometClient::new(
+            &e,
+            &storage::get_valid_backstop_tokens(&e)
+                .get(0)
+                .unwrap_optimized(),
+        );
+
+        let bootstrap_amount =
+            bootstrap.backstop_tokens * (bootstrap.bootstrap_weight as i128) / 1_000_0000;
+        // e.authorize_as_current_contract(vec![
+        //     &e,
+        //     InvokerContractAuthEntry::Contract(SubContractInvocation {
+        //         context: ContractContext {
+        //             contract: comet_client.address,
+        //             fn_name: Symbol::new(&e, "transfer"),
+        //             args: vec![
+        //                 &e,
+        //                 e.current_contract_address().into_val(&e),
+        //                 // backstop bootstrapper will only work with the first backstop
+        //                 storage::get_valid_backstops(&e)
+        //                     .get_unchecked(0)
+        //                     .into_val(&e),
+        //                 bootstrap_amount.into_val(&e),
+        //             ],
+        //         },
+        //         sub_invocations: vec![&e],
+        //     }),
+        // ]);
+        e.authorize_as_current_contract(vec![
+            &e,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: storage::get_valid_backstops(&e).get_unchecked(0),
+                    fn_name: Symbol::new(&e, "deposit"),
+                    args: vec![
+                        &e,
+                        e.current_contract_address().into_val(&e),
+                        bootstrap.pool_address.into_val(&e),
+                        bootstrap_amount.into_val(&e),
+                    ],
+                },
+                sub_invocations: vec![
+                    &e,
+                    InvokerContractAuthEntry::Contract(SubContractInvocation {
+                        context: ContractContext {
+                            contract: comet_client.address,
+                            fn_name: Symbol::new(&e, "transfer"),
+                            args: vec![
+                                &e,
+                                e.current_contract_address().into_val(&e),
+                                // backstop bootstrapper will only work with the first backstop
+                                storage::get_valid_backstops(&e)
+                                    .get_unchecked(0)
+                                    .into_val(&e),
+                                bootstrap_amount.into_val(&e),
+                            ],
+                        },
+                        sub_invocations: vec![&e],
+                    }),
+                ],
+            }),
+        ]);
+
+        backstop_bootstrapper_client.claim(
+            &e.current_contract_address(),
+            &e.current_contract_address(),
+            &bootstrap_id,
+        );
     }
 }

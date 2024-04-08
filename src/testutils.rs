@@ -6,7 +6,7 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, Map, Symbol,
 };
 
-use crate::dependencies::{backstop, comet, emitter, pool, pool_factory};
+use crate::dependencies::{backstop, bootstrapper, comet, emitter, pool, pool_factory};
 
 mod contract {
     soroban_sdk::contractimport!(
@@ -25,11 +25,12 @@ pub fn create_blend_lockup_wasm<'a>(
     owner: &Address,
     emitter: &Address,
     unlock: &u64,
+    bootstrapper: &Address,
 ) -> (Address, contract::Client<'a>) {
     let token_lockup_address = e.register_contract_wasm(None, contract::WASM);
     let token_lockup_client: contract::Client<'a> =
         contract::Client::new(&e, &token_lockup_address);
-    token_lockup_client.initialize(owner, emitter, unlock);
+    token_lockup_client.initialize(owner, emitter, bootstrapper, unlock);
     (token_lockup_address, token_lockup_client)
 }
 
@@ -84,6 +85,7 @@ pub struct BlendContracts<'a> {
     pub backstop_token: comet::Client<'a>,
     pub pool_factory: pool_factory::Client<'a>,
     pub pool: pool::Client<'a>,
+    pub bootstrapper: bootstrapper::Client<'a>,
 }
 
 pub fn create_blend_contracts<'a>(
@@ -124,7 +126,7 @@ pub fn create_blend_contracts<'a>(
 
     let pool_factory_client = pool_factory::Client::new(&e, &pool_factory);
     pool_factory_client.initialize(&pool_factory::PoolInitMeta {
-        backstop,
+        backstop: backstop.clone(),
         blnd_id: blnd.clone(),
         pool_hash,
     });
@@ -148,11 +150,17 @@ pub fn create_blend_contracts<'a>(
     backstop_client.deposit(&admin, &pool_address, &50_000_0000000);
     backstop_client.update_tkn_val();
     backstop_client.add_reward(&pool_address, &Address::generate(&e));
+
+    let backstop_bootstrapper = e.register_contract_wasm(None, bootstrapper::WASM);
+    let backstop_bootstrapper_client = bootstrapper::Client::new(&e, &backstop_bootstrapper);
+    backstop_bootstrapper_client.initialize(&backstop, &comet, &pool_factory);
+
     BlendContracts {
         backstop: backstop_client,
         emitter: emitter_client,
         backstop_token: comet_client,
         pool_factory: pool_factory_client,
         pool: pool::Client::new(&e, &pool_address),
+        bootstrapper: backstop_bootstrapper_client,
     }
 }

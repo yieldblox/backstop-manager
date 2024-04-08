@@ -29,12 +29,14 @@ fn test_lockup() {
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
+        &contracts.bootstrapper.address,
     );
 
     // verify initailize can't be run twice
     let result = blend_lockup_client.try_initialize(
         &frodo,
         &contracts.emitter.address,
+        &contracts.bootstrapper.address,
         &e.ledger().timestamp(),
     );
     assert_eq!(result.err(), Some(Ok(Error::from_contract_error(3))));

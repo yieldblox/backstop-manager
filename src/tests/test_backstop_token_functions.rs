@@ -27,6 +27,7 @@ fn test_execute_comet_functions() {
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
+        &contracts.bootstrapper.address,
     );
 
     // mint underlying tokens to the blend lockup contract
