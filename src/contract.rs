@@ -1,7 +1,8 @@
 use crate::{
     dependencies::{
-        backstop::Client as BackstopClient, bootstrapper::Bootstrap,
-        bootstrapper::Client as BootstrapClient, comet::Client as CometClient,
+        backstop::Client as BackstopClient,
+        bootstrapper::{Bootstrap, BootstrapConfig, Client as BootstrapClient},
+        comet::Client as CometClient,
         emitter::Client as EmitterClient,
     },
     errors::BlendLockupError,
@@ -416,14 +417,14 @@ impl BlendLockup {
             }),
         ]);
 
-        BootstrapClient::new(&e, &backstop_bootstrapper).add_bootstrap(
-            &e.current_contract_address(),
-            &bootstrap_token_index,
-            &bootstrap_amount,
-            &pair_min,
-            &duration,
-            &pool_address,
-        );
+        BootstrapClient::new(&e, &backstop_bootstrapper).bootstrap(&BootstrapConfig {
+            bootstrapper: e.current_contract_address(),
+            amount: bootstrap_amount,
+            close_ledger: e.ledger().sequence() + duration,
+            pair_min,
+            pool: pool_address,
+            token_index: bootstrap_token_index,
+        });
     }
 
     /// (Only Owner) Claims the proceeds of a backstop bootstrapping
@@ -438,8 +439,7 @@ impl BlendLockup {
 
         let backstop_bootstrapper_client =
             BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
-        let bootstrap: Bootstrap = backstop_bootstrapper_client
-            .get_bootstrap(&bootstrap_id, &e.current_contract_address());
+        let bootstrap: Bootstrap = backstop_bootstrapper_client.get_bootstrap(&bootstrap_id);
 
         // backstop bootstrapper will only work with the first backstop token
         let comet_client = CometClient::new(
@@ -449,8 +449,14 @@ impl BlendLockup {
                 .unwrap_optimized(),
         );
 
-        let bootstrap_amount =
-            bootstrap.backstop_tokens * (bootstrap.bootstrap_weight as i128) / 1_000_0000;
+        let backstop_token_amount = bootstrap.data.total_backstop_tokens
+            * (comet_client.get_normalized_weight(
+                &comet_client
+                    .get_tokens()
+                    .get(bootstrap.config.token_index)
+                    .unwrap_optimized(),
+            ) as i128)
+            / 1_000_0000;
         // e.authorize_as_current_contract(vec![
         //     &e,
         //     InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -479,8 +485,8 @@ impl BlendLockup {
                     args: vec![
                         &e,
                         e.current_contract_address().into_val(&e),
-                        bootstrap.pool_address.into_val(&e),
-                        bootstrap_amount.into_val(&e),
+                        bootstrap.config.pool.into_val(&e),
+                        backstop_token_amount.into_val(&e),
                     ],
                 },
                 sub_invocations: vec![
@@ -496,7 +502,7 @@ impl BlendLockup {
                                 storage::get_valid_backstops(&e)
                                     .get_unchecked(0)
                                     .into_val(&e),
-                                bootstrap_amount.into_val(&e),
+                                backstop_token_amount.into_val(&e),
                             ],
                         },
                         sub_invocations: vec![&e],
@@ -505,10 +511,21 @@ impl BlendLockup {
             }),
         ]);
 
-        backstop_bootstrapper_client.claim(
-            &e.current_contract_address(),
-            &e.current_contract_address(),
-            &bootstrap_id,
-        );
+        backstop_bootstrapper_client.claim(&e.current_contract_address(), &bootstrap_id);
+    }
+
+    /// (Only Owner) Refunds a cancelled backstop bootstrapping
+    ///
+    /// ### Arguments
+    /// * `bootstrap_id` - The id of the bootstrapper
+    pub fn bb_refund_bootstrap(e: Env, bootstrap_id: u32) {
+        let owner = storage::get_owner(&e);
+        owner.require_auth();
+        storage::extend_instance(&e);
+
+        let backstop_bootstrapper_client =
+            BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
+
+        backstop_bootstrapper_client.refund(&e.current_contract_address(), &bootstrap_id);
     }
 }
