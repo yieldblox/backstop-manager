@@ -1,13 +1,12 @@
 use crate::{
     dependencies::{
-        backstop::Client as BackstopClient,
         bootstrapper::{Bootstrap, BootstrapConfig, Client as BootstrapClient},
         comet::Client as CometClient,
-        emitter::Client as EmitterClient,
     },
     errors::BlendLockupError,
     storage,
 };
+use blend_contract_sdk::{backstop::Client as BackstopClient, emitter::Client as EmitterClient};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, panic_with_error,
@@ -440,14 +439,11 @@ impl BlendLockup {
         let backstop_bootstrapper_client =
             BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
         let bootstrap: Bootstrap = backstop_bootstrapper_client.get_bootstrap(&bootstrap_id);
+        // bootstrapper will only work with the first backstop
+        let valid_backstop = storage::get_valid_backstops(&e).get_unchecked(0);
+        let valid_backstop_token = storage::get_valid_backstop_tokens(&e).get_unchecked(0);
 
-        // backstop bootstrapper will only work with the first backstop token
-        let comet_client = CometClient::new(
-            &e,
-            &storage::get_valid_backstop_tokens(&e)
-                .get(0)
-                .unwrap_optimized(),
-        );
+        let comet_client = CometClient::new(&e, &valid_backstop_token);
 
         let backstop_token_amount = bootstrap.data.total_backstop_tokens
             * (comet_client.get_normalized_weight(
@@ -457,30 +453,12 @@ impl BlendLockup {
                     .unwrap_optimized(),
             ) as i128)
             / 1_000_0000;
-        // e.authorize_as_current_contract(vec![
-        //     &e,
-        //     InvokerContractAuthEntry::Contract(SubContractInvocation {
-        //         context: ContractContext {
-        //             contract: comet_client.address,
-        //             fn_name: Symbol::new(&e, "transfer"),
-        //             args: vec![
-        //                 &e,
-        //                 e.current_contract_address().into_val(&e),
-        //                 // backstop bootstrapper will only work with the first backstop
-        //                 storage::get_valid_backstops(&e)
-        //                     .get_unchecked(0)
-        //                     .into_val(&e),
-        //                 bootstrap_amount.into_val(&e),
-        //             ],
-        //         },
-        //         sub_invocations: vec![&e],
-        //     }),
-        // ]);
+
         e.authorize_as_current_contract(vec![
             &e,
             InvokerContractAuthEntry::Contract(SubContractInvocation {
                 context: ContractContext {
-                    contract: storage::get_valid_backstops(&e).get_unchecked(0),
+                    contract: valid_backstop.clone(),
                     fn_name: Symbol::new(&e, "deposit"),
                     args: vec![
                         &e,
@@ -498,10 +476,7 @@ impl BlendLockup {
                             args: vec![
                                 &e,
                                 e.current_contract_address().into_val(&e),
-                                // backstop bootstrapper will only work with the first backstop
-                                storage::get_valid_backstops(&e)
-                                    .get_unchecked(0)
-                                    .into_val(&e),
+                                valid_backstop.into_val(&e),
                                 backstop_token_amount.into_val(&e),
                             ],
                         },

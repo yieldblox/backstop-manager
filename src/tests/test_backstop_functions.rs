@@ -1,15 +1,13 @@
 #![cfg(test)]
 
+use blend_contract_sdk::backstop;
 use soroban_sdk::{
     testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, MockAuth, MockAuthInvoke},
     token::StellarAssetClient,
     vec, Address, Env, IntoVal, Symbol,
 };
 
-use crate::{
-    dependencies::backstop,
-    testutils::{create_blend_contracts, create_blend_lockup_wasm, EnvTestUtils},
-};
+use crate::testutils::{create_blend_contracts, create_blend_lockup_wasm, EnvTestUtils};
 
 #[test]
 fn test_execute_backstop_functions() {
@@ -24,13 +22,13 @@ fn test_execute_backstop_functions() {
     let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
     let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
     let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let contracts = create_blend_contracts(&e, &bombadil, &usdc_id, &blnd_id);
+    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
     let (_, blend_lockup_client) = create_blend_lockup_wasm(
         &e,
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
-        &contracts.bootstrapper.address,
+        &Address::generate(&e),
     );
 
     // mint backstop tokens to the blend lockup contract
@@ -54,7 +52,7 @@ fn test_execute_backstop_functions() {
                     &e,
                     contracts.backstop.address.clone().into_val(&e),
                     contracts.backstop_token.address.clone().into_val(&e),
-                    contracts.pool.address.clone().into_val(&e),
+                    pool.clone().into_val(&e),
                     lp_mint_amount.clone().into_val(&e),
                 ],
                 sub_invokes: &[],
@@ -63,7 +61,7 @@ fn test_execute_backstop_functions() {
         .b_deposit(
             &contracts.backstop.address,
             &contracts.backstop_token.address,
-            &contracts.pool.address,
+            &pool,
             &lp_mint_amount,
         );
     assert_eq!(
@@ -78,7 +76,7 @@ fn test_execute_backstop_functions() {
                         &e,
                         contracts.backstop.address.clone().into_val(&e),
                         contracts.backstop_token.address.clone().into_val(&e),
-                        contracts.pool.address.clone().into_val(&e),
+                        pool.clone().into_val(&e),
                         lp_mint_amount.clone().into_val(&e),
                     ]
                 )),
@@ -90,7 +88,7 @@ fn test_execute_backstop_functions() {
         lp_mint_amount,
         contracts
             .backstop
-            .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool, &blend_lockup_client.address)
             .shares
     );
 
@@ -108,15 +106,12 @@ fn test_execute_backstop_functions() {
                 args: vec![
                     &e,
                     contracts.backstop.address.clone().into_val(&e),
-                    vec![&e, contracts.pool.address.clone()].into_val(&e),
+                    vec![&e, pool.clone()].into_val(&e),
                 ],
                 sub_invokes: &[],
             },
         }])
-        .b_claim(
-            &contracts.backstop.address,
-            &vec![&e, contracts.pool.address.clone()],
-        );
+        .b_claim(&contracts.backstop.address, &vec![&e, pool.clone()]);
     assert_eq!(
         e.auths()[0],
         (
@@ -128,7 +123,7 @@ fn test_execute_backstop_functions() {
                     vec![
                         &e,
                         contracts.backstop.address.clone().into_val(&e),
-                        vec![&e, contracts.pool.address.clone()].into_val(&e),
+                        vec![&e, pool.clone()].into_val(&e),
                     ]
                 )),
                 sub_invocations: std::vec![]
@@ -137,7 +132,7 @@ fn test_execute_backstop_functions() {
     );
     let new_shares = contracts
         .backstop
-        .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+        .user_balance(&pool, &blend_lockup_client.address)
         .shares;
     assert!(new_shares > lp_mint_amount);
     let claim_amount = new_shares - lp_mint_amount;
@@ -152,7 +147,7 @@ fn test_execute_backstop_functions() {
                 args: vec![
                     &e,
                     contracts.backstop.address.clone().into_val(&e),
-                    contracts.pool.address.clone().into_val(&e),
+                    pool.clone().into_val(&e),
                     (lp_mint_amount + claim_amount).clone().into_val(&e),
                 ],
                 sub_invokes: &[],
@@ -160,7 +155,7 @@ fn test_execute_backstop_functions() {
         }])
         .b_queue_withdrawal(
             &contracts.backstop.address,
-            &contracts.pool.address,
+            &pool,
             &(lp_mint_amount + claim_amount),
         );
     assert_eq!(
@@ -174,7 +169,7 @@ fn test_execute_backstop_functions() {
                     vec![
                         &e,
                         contracts.backstop.address.clone().into_val(&e),
-                        contracts.pool.address.clone().into_val(&e),
+                        pool.clone().into_val(&e),
                         (lp_mint_amount + claim_amount).clone().into_val(&e),
                     ]
                 )),
@@ -190,7 +185,7 @@ fn test_execute_backstop_functions() {
         }),
         contracts
             .backstop
-            .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool, &blend_lockup_client.address)
             .q4w
             .get(0)
     );
@@ -205,7 +200,7 @@ fn test_execute_backstop_functions() {
                 args: vec![
                     &e,
                     contracts.backstop.address.clone().into_val(&e),
-                    contracts.pool.address.clone().into_val(&e),
+                    pool.clone().into_val(&e),
                     (lp_mint_amount + claim_amount).clone().into_val(&e),
                 ],
                 sub_invokes: &[],
@@ -213,7 +208,7 @@ fn test_execute_backstop_functions() {
         }])
         .b_dequeue_withdrawal(
             &contracts.backstop.address,
-            &contracts.pool.address,
+            &pool,
             &(lp_mint_amount + claim_amount),
         );
     assert_eq!(
@@ -227,7 +222,7 @@ fn test_execute_backstop_functions() {
                     vec![
                         &e,
                         contracts.backstop.address.clone().into_val(&e),
-                        contracts.pool.address.clone().into_val(&e),
+                        pool.clone().into_val(&e),
                         (lp_mint_amount + claim_amount).clone().into_val(&e),
                     ]
                 )),
@@ -239,7 +234,7 @@ fn test_execute_backstop_functions() {
         None,
         contracts
             .backstop
-            .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool, &blend_lockup_client.address)
             .q4w
             .get(0)
     );
@@ -254,7 +249,7 @@ fn test_execute_backstop_functions() {
                 args: vec![
                     &e,
                     contracts.backstop.address.clone().into_val(&e),
-                    contracts.pool.address.clone().into_val(&e),
+                    pool.clone().into_val(&e),
                     (lp_mint_amount + claim_amount).clone().into_val(&e),
                 ],
                 sub_invokes: &[],
@@ -262,7 +257,7 @@ fn test_execute_backstop_functions() {
         }])
         .b_queue_withdrawal(
             &contracts.backstop.address,
-            &contracts.pool.address,
+            &pool,
             &(lp_mint_amount + claim_amount),
         );
     e.jump(21 * 24 * 60 * 60 / 5);
@@ -277,7 +272,7 @@ fn test_execute_backstop_functions() {
                 args: vec![
                     &e,
                     contracts.backstop.address.clone().into_val(&e),
-                    contracts.pool.address.clone().into_val(&e),
+                    pool.clone().into_val(&e),
                     (lp_mint_amount + claim_amount).clone().into_val(&e),
                 ],
                 sub_invokes: &[],
@@ -285,7 +280,7 @@ fn test_execute_backstop_functions() {
         }])
         .b_withdraw(
             &contracts.backstop.address,
-            &contracts.pool.address,
+            &pool,
             &(lp_mint_amount + claim_amount),
         );
     assert_eq!(
@@ -299,7 +294,7 @@ fn test_execute_backstop_functions() {
                     vec![
                         &e,
                         contracts.backstop.address.clone().into_val(&e),
-                        contracts.pool.address.clone().into_val(&e),
+                        pool.clone().into_val(&e),
                         (lp_mint_amount + claim_amount).clone().into_val(&e),
                     ]
                 )),
@@ -312,7 +307,7 @@ fn test_execute_backstop_functions() {
         0,
         contracts
             .backstop
-            .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool, &blend_lockup_client.address)
             .shares
     );
     assert_eq!(

@@ -1,16 +1,18 @@
 #![cfg(test)]
 
-use std::println;
-
 use soroban_sdk::{
     testutils::{Address as _, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env, IntoVal,
 };
+use std::println;
 
 use crate::{
     dependencies::bootstrapper::BootstrapConfig,
-    testutils::{create_blend_contracts, create_blend_lockup_wasm, EnvTestUtils},
+    testutils::{
+        create_backstop_bootstrapper, create_blend_contracts, create_blend_lockup_wasm,
+        EnvTestUtils,
+    },
 };
 
 #[test]
@@ -26,13 +28,14 @@ fn test_execute_bootstrapper_functions() {
     let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
     let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
     let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let contracts = create_blend_contracts(&e, &bombadil, &usdc_id, &blnd_id);
+    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
+    let bootstrapper = create_backstop_bootstrapper(&e, &contracts);
     let (_, blend_lockup_client) = create_blend_lockup_wasm(
         &e,
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
-        &contracts.bootstrapper.address,
+        &bootstrapper.address,
     );
 
     // mint underlying tokens to the blend lockup contract
@@ -49,7 +52,6 @@ fn test_execute_bootstrapper_functions() {
     let duration: u32 = 17280 + 1;
     let min: i128 = 10_000_0000;
     // create_bootstrap
-    println!("creating bootstrap");
     e.set_auths(&[]);
     blend_lockup_client
         .mock_auths(&[MockAuth {
@@ -63,10 +65,10 @@ fn test_execute_bootstrapper_functions() {
                     blnd_amount.clone().into_val(&e),
                     min.clone().into_val(&e),
                     duration.clone().into_val(&e),
-                    contracts.pool.address.clone().into_val(&e),
+                    pool.clone().into_val(&e),
                 ],
                 sub_invokes: &[MockAuthInvoke {
-                    contract: &contracts.bootstrapper.address,
+                    contract: &bootstrapper.address,
                     fn_name: &"bootstrap",
                     args: vec![
                         &e,
@@ -76,7 +78,7 @@ fn test_execute_bootstrapper_functions() {
                             amount: blnd_amount.clone(),
                             pair_min: 10_000_0000,
                             close_ledger: (e.ledger().timestamp() + 17280 + 1) as u32,
-                            pool: contracts.pool.address.clone(),
+                            pool: pool.clone(),
                         }
                         .into_val(&e),
                     ],
@@ -86,7 +88,7 @@ fn test_execute_bootstrapper_functions() {
                         args: vec![
                             &e,
                             blend_lockup_client.address.clone().into_val(&e),
-                            contracts.bootstrapper.address.clone().into_val(&e),
+                            bootstrapper.address.clone().into_val(&e),
                             blnd_amount.into_val(&e),
                         ],
                         sub_invokes: &[],
@@ -94,16 +96,10 @@ fn test_execute_bootstrapper_functions() {
                 }],
             },
         }])
-        .bb_start_bootstrap(
-            &blnd_index,
-            &blnd_amount,
-            &min,
-            &duration,
-            &contracts.pool.address,
-        );
+        .bb_start_bootstrap(&blnd_index, &blnd_amount, &min, &duration, &pool);
 
     assert_eq!(
-        blnd_token.balance(&contracts.bootstrapper.address).clone(),
+        blnd_token.balance(&bootstrapper.address).clone(),
         blnd_amount.clone()
     );
     let backstop_token_balance = contracts
@@ -111,15 +107,15 @@ fn test_execute_bootstrapper_functions() {
         .balance(&contracts.backstop.address);
     // frodo join bootstrap
     e.mock_all_auths();
-    contracts.bootstrapper.join(&frodo, &0, &usdc_balance);
+    bootstrapper.join(&frodo, &0, &usdc_balance);
 
     // claim bootstrap
     e.jump(duration + 1);
-    contracts.bootstrapper.close(&0);
+    bootstrapper.close(&0);
 
     e.set_auths(&[]);
-    let bootstrap = contracts.bootstrapper.get_bootstrap(&0);
-    let claim_amount: i128 = 79999893651;
+    let bootstrap = bootstrapper.get_bootstrap(&0);
+    let claim_amount: i128 = 79999567983;
     assert_eq!(
         claim_amount,
         bootstrap.data.total_backstop_tokens * 800_0000 as i128 / 1_000_0000
@@ -134,7 +130,7 @@ fn test_execute_bootstrapper_functions() {
                 fn_name: &"bb_claim_bootstrap",
                 args: vec![&e, bootstrap_id.clone().into_val(&e)],
                 sub_invokes: &[MockAuthInvoke {
-                    contract: &contracts.bootstrapper.address,
+                    contract: &bootstrapper.address,
                     fn_name: &"claim",
                     args: vec![
                         &e,
@@ -148,7 +144,7 @@ fn test_execute_bootstrapper_functions() {
                             fn_name: &"transfer",
                             args: vec![
                                 &e,
-                                contracts.bootstrapper.address.clone().into_val(&e),
+                                bootstrapper.address.clone().into_val(&e),
                                 blend_lockup_client.address.clone().into_val(&e),
                                 claim_amount.clone().into_val(&e),
                             ],
@@ -160,7 +156,7 @@ fn test_execute_bootstrapper_functions() {
                             args: vec![
                                 &e,
                                 blend_lockup_client.address.clone().into_val(&e),
-                                contracts.pool.address.clone().into_val(&e),
+                                pool.clone().into_val(&e),
                                 claim_amount.clone().into_val(&e),
                             ],
                             sub_invokes: &[MockAuthInvoke {
@@ -202,13 +198,14 @@ fn test_execute_bootstrapper_functions_cancelled() {
     let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
     let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
     let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let contracts = create_blend_contracts(&e, &bombadil, &usdc_id, &blnd_id);
+    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
+    let bootstrapper = create_backstop_bootstrapper(&e, &contracts);
     let (_, blend_lockup_client) = create_blend_lockup_wasm(
         &e,
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
-        &contracts.bootstrapper.address,
+        &bootstrapper.address,
     );
 
     // mint underlying tokens to the blend lockup contract
@@ -238,10 +235,10 @@ fn test_execute_bootstrapper_functions_cancelled() {
                     blnd_amount.clone().into_val(&e),
                     min.clone().into_val(&e),
                     duration.clone().into_val(&e),
-                    contracts.pool.address.clone().into_val(&e),
+                    pool.clone().into_val(&e),
                 ],
                 sub_invokes: &[MockAuthInvoke {
-                    contract: &contracts.bootstrapper.address,
+                    contract: &bootstrapper.address,
                     fn_name: &"bootstrap",
                     args: vec![
                         &e,
@@ -251,7 +248,7 @@ fn test_execute_bootstrapper_functions_cancelled() {
                             amount: blnd_amount.clone(),
                             pair_min: 10_000_0000,
                             close_ledger: (e.ledger().timestamp() + 17280 + 1) as u32,
-                            pool: contracts.pool.address.clone(),
+                            pool: pool.clone(),
                         }
                         .into_val(&e),
                     ],
@@ -261,7 +258,7 @@ fn test_execute_bootstrapper_functions_cancelled() {
                         args: vec![
                             &e,
                             blend_lockup_client.address.clone().into_val(&e),
-                            contracts.bootstrapper.address.clone().into_val(&e),
+                            bootstrapper.address.clone().into_val(&e),
                             blnd_amount.into_val(&e),
                         ],
                         sub_invokes: &[],
@@ -269,25 +266,17 @@ fn test_execute_bootstrapper_functions_cancelled() {
                 }],
             },
         }])
-        .bb_start_bootstrap(
-            &blnd_index,
-            &blnd_amount,
-            &min,
-            &duration,
-            &contracts.pool.address,
-        );
+        .bb_start_bootstrap(&blnd_index, &blnd_amount, &min, &duration, &pool);
 
     assert_eq!(
-        blnd_token.balance(&contracts.bootstrapper.address).clone(),
+        blnd_token.balance(&bootstrapper.address).clone(),
         blnd_amount.clone()
     );
 
-    // claim bootstrap
+    // wait until bootstrap expires
     e.jump(duration + 1);
     e.set_auths(&[]);
-
     let bootstrap_id = 0;
-
     blend_lockup_client
         .mock_auths(&[MockAuth {
             address: &frodo,
@@ -296,7 +285,7 @@ fn test_execute_bootstrapper_functions_cancelled() {
                 fn_name: &"bb_refund_bootstrap",
                 args: vec![&e, bootstrap_id.clone().into_val(&e)],
                 sub_invokes: &[MockAuthInvoke {
-                    contract: &contracts.bootstrapper.address,
+                    contract: &bootstrapper.address,
                     fn_name: &"refund",
                     args: vec![
                         &e,
@@ -308,7 +297,7 @@ fn test_execute_bootstrapper_functions_cancelled() {
                         fn_name: &"transfer",
                         args: vec![
                             &e,
-                            contracts.bootstrapper.address.clone().into_val(&e),
+                            bootstrapper.address.clone().into_val(&e),
                             blend_lockup_client.address.clone().into_val(&e),
                             blnd_amount.clone().into_val(&e),
                         ],
