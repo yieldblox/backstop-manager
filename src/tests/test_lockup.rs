@@ -23,18 +23,20 @@ fn test_lockup() {
     let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
     let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
     let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let contracts = create_blend_contracts(&e, &bombadil, &usdc_id, &blnd_id);
+    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
     let (_, blend_lockup_client) = create_blend_lockup_wasm(
         &e,
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
+        &Address::generate(&e),
     );
 
     // verify initailize can't be run twice
     let result = blend_lockup_client.try_initialize(
         &frodo,
         &contracts.emitter.address,
+        &Address::generate(&e),
         &e.ledger().timestamp(),
     );
     assert_eq!(result.err(), Some(Ok(Error::from_contract_error(3))));
@@ -65,14 +67,14 @@ fn test_lockup() {
     blend_lockup_client.b_deposit(
         &contracts.backstop.address,
         &contracts.backstop_token.address,
-        &contracts.pool.address,
+        &pool,
         &lp_mint_amount,
     );
     assert_eq!(
         lp_mint_amount,
         contracts
             .backstop
-            .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool, &blend_lockup_client.address)
             .shares
     );
     let actual_blnd_in = starting_blnd_balance - blnd_token.balance(&blend_lockup_client.address);
@@ -82,7 +84,7 @@ fn test_lockup() {
 
     blend_lockup_client.b_queue_withdrawal(
         &contracts.backstop.address,
-        &contracts.pool.address,
+        &pool,
         &(lp_mint_amount / 2),
     );
 
@@ -90,27 +92,16 @@ fn test_lockup() {
     e.jump(22 * ONE_DAY_LEDGERS); // 33 days total
 
     // claim and add rest of the shares to the queue
-    blend_lockup_client.b_claim(
-        &contracts.backstop.address,
-        &vec![&e, contracts.pool.address.clone()],
-    );
+    blend_lockup_client.b_claim(&contracts.backstop.address, &vec![&e, pool.clone()]);
     let remaining_shares = contracts
         .backstop
-        .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+        .user_balance(&pool, &blend_lockup_client.address)
         .shares;
     assert!(remaining_shares > lp_mint_amount / 2);
-    blend_lockup_client.b_queue_withdrawal(
-        &contracts.backstop.address,
-        &contracts.pool.address,
-        &remaining_shares,
-    );
+    blend_lockup_client.b_queue_withdrawal(&contracts.backstop.address, &pool, &remaining_shares);
 
     // withdraw initially queued shares
-    blend_lockup_client.b_withdraw(
-        &contracts.backstop.address,
-        &contracts.pool.address,
-        &(lp_mint_amount / 2),
-    );
+    blend_lockup_client.b_withdraw(&contracts.backstop.address, &pool, &(lp_mint_amount / 2));
 
     assert_eq!(
         lp_mint_amount / 2,
@@ -155,11 +146,7 @@ fn test_lockup() {
     // wait until we can withdraw the rest of the backstop shares and claim them
     // 9 days have passed since they were queued
     e.jump(12 * ONE_DAY_LEDGERS);
-    blend_lockup_client.b_withdraw(
-        &contracts.backstop.address,
-        &contracts.pool.address,
-        &remaining_shares,
-    );
+    blend_lockup_client.b_withdraw(&contracts.backstop.address, &pool, &remaining_shares);
     blend_lockup_client.claim(&vec![&e, contracts.backstop_token.address.clone()]);
     assert_eq!(
         lp_mint_amount / 2 + remaining_shares,

@@ -17,4 +17,5 @@ pub enum BlendLockupError {
 
     InvalidUnlockTime = 100,
     InvalidContractAddress = 101,
+    InvalidTokenIndex = 102,
 }

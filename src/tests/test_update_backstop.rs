@@ -23,12 +23,13 @@ fn test_update_backstop() {
     let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
     let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
     let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let contracts = create_blend_contracts(&e, &bombadil, &usdc_id, &blnd_id);
+    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
     let (_, blend_lockup_client) = create_blend_lockup_wasm(
         &e,
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
+        &Address::generate(&e),
     );
 
     let starting_blnd_balance: i128 = 100_000_0000000;
@@ -50,14 +51,14 @@ fn test_update_backstop() {
     blend_lockup_client.b_deposit(
         &contracts.backstop.address,
         &contracts.backstop_token.address,
-        &contracts.pool.address,
+        &pool,
         &lp_mint_amount,
     );
     assert_eq!(
         lp_mint_amount,
         contracts
             .backstop
-            .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool, &blend_lockup_client.address)
             .shares
     );
 
@@ -71,7 +72,7 @@ fn test_update_backstop() {
     );
 
     // deploy a new backstop and backstop token
-    let contracts_2 = create_blend_contracts(&e, &bombadil, &usdc_id, &blnd_id);
+    let (contracts_2, pool_2) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
     contracts
         .backstop_token
         .transfer(&bombadil, &contracts_2.backstop.address, &60_000_0000000);
@@ -95,7 +96,7 @@ fn test_update_backstop() {
     let result = blend_lockup_client.try_b_deposit(
         &contracts_2.backstop.address,
         &contracts_2.backstop_token.address,
-        &contracts_2.pool.address,
+        &pool_2,
         &lp_mint_amount,
     );
     assert_eq!(result.err(), Some(Ok(Error::from_contract_error(101))));
@@ -174,16 +175,12 @@ fn test_update_backstop() {
     );
 
     // validate both backstops can be interacted with
-    blend_lockup_client.b_queue_withdrawal(
-        &contracts.backstop.address,
-        &contracts.pool.address,
-        &lp_mint_amount,
-    );
+    blend_lockup_client.b_queue_withdrawal(&contracts.backstop.address, &pool, &lp_mint_amount);
     assert_eq!(
         lp_mint_amount,
         contracts
             .backstop
-            .user_balance(&contracts.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool, &blend_lockup_client.address)
             .q4w
             .get_unchecked(0)
             .amount
@@ -191,14 +188,14 @@ fn test_update_backstop() {
     blend_lockup_client.b_deposit(
         &contracts_2.backstop.address,
         &contracts_2.backstop_token.address,
-        &contracts_2.pool.address,
+        &pool_2,
         &lp_mint_amount,
     );
     assert_eq!(
         lp_mint_amount,
         contracts_2
             .backstop
-            .user_balance(&contracts_2.pool.address, &blend_lockup_client.address)
+            .user_balance(&pool_2, &blend_lockup_client.address)
             .shares
     );
 }

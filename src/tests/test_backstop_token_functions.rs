@@ -1,12 +1,13 @@
 #![cfg(test)]
 
+use blend_contract_sdk::testutils::BlendFixture;
 use soroban_sdk::{
     testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Env, IntoVal, Symbol, Vec,
 };
 
-use crate::testutils::{create_blend_contracts, create_blend_lockup_wasm, EnvTestUtils};
+use crate::testutils::{create_blend_lockup_wasm, EnvTestUtils};
 
 #[test]
 fn test_execute_comet_functions() {
@@ -21,12 +22,13 @@ fn test_execute_comet_functions() {
     let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
     let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
     let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let contracts = create_blend_contracts(&e, &bombadil, &usdc_id, &blnd_id);
+    let contracts = BlendFixture::deploy(&e, &bombadil, &blnd_id, &usdc_id);
     let (_, blend_lockup_client) = create_blend_lockup_wasm(
         &e,
         &frodo,
         &contracts.emitter.address,
         &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
+        &Address::generate(&e),
     );
 
     // mint underlying tokens to the blend lockup contract
