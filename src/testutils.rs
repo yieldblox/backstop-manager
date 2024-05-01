@@ -3,7 +3,7 @@
 use blend_contract_sdk::testutils::BlendFixture;
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Ledger as _, LedgerInfo},
-    Address, BytesN, Env, Symbol,
+    Address, BytesN, Env, String,
 };
 
 use crate::dependencies::bootstrapper;
@@ -102,7 +102,7 @@ pub fn create_blend_contracts<'a>(
     let contracts = BlendFixture::deploy(&e, &admin, &blnd_id, &usdc_id);
     let pool = contracts.pool_factory.deploy(
         &admin,
-        &Symbol::new(&e, "test"),
+        &String::from_str(&e, "test"),
         &BytesN::<32>::random(&e),
         &Address::generate(&e),
         &0,
