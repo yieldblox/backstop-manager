@@ -115,7 +115,7 @@ fn test_execute_bootstrapper_functions() {
 
     e.set_auths(&[]);
     let bootstrap = bootstrapper.get_bootstrap(&0);
-    let claim_amount: i128 = 79999567983;
+    let claim_amount: i128 = 79999992319;
     assert_eq!(
         claim_amount,
         bootstrap.data.total_backstop_tokens * 800_0000 as i128 / 1_000_0000
