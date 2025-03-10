@@ -10,24 +10,24 @@ use crate::dependencies::bootstrapper;
 
 mod contract {
     soroban_sdk::contractimport!(
-        file = "./target/wasm32-unknown-unknown/optimized/blend_lockup.wasm"
+        file = "./target/wasm32-unknown-unknown/optimized/backstop_manager.wasm"
     );
 }
 
-/// Create a blend lockup contract via wasm
+/// Create a backstop manager contract via wasm
 ///
 /// ### Arguments
 /// * `owner` - The address of the owner
 /// * `emitter` - The address of the emitter
 /// * `unlock` - The unlock ledger time (in seconds)
-pub fn create_blend_lockup_wasm<'a>(
+pub fn create_backstop_manager_wasm<'a>(
     e: &Env,
     owner: &Address,
     emitter: &Address,
     unlock: &u64,
     bootstrapper: &Address,
 ) -> (Address, contract::Client<'a>) {
-    let token_lockup_address = e.register_contract_wasm(None, contract::WASM);
+    let token_lockup_address = e.register(contract::WASM, {});
     let token_lockup_client: contract::Client<'a> =
         contract::Client::new(&e, &token_lockup_address);
     token_lockup_client.initialize(owner, emitter, bootstrapper, unlock);
@@ -83,7 +83,7 @@ pub fn create_backstop_bootstrapper<'a>(
     e: &Env,
     blend_fixture: &BlendFixture,
 ) -> bootstrapper::Client<'a> {
-    let backstop_bootstrapper = e.register_contract_wasm(None, bootstrapper::WASM);
+    let backstop_bootstrapper = e.register(bootstrapper::WASM, {});
     let backstop_bootstrapper_client = bootstrapper::Client::new(&e, &backstop_bootstrapper);
     backstop_bootstrapper_client.initialize(
         &blend_fixture.backstop.address,
@@ -107,11 +107,11 @@ pub fn create_blend_contracts<'a>(
         &Address::generate(&e),
         &0,
         &2,
+        &0,
     );
 
     contracts.backstop.deposit(&admin, &pool, &50_000_0000000);
-    contracts.backstop.update_tkn_val();
-    contracts.backstop.add_reward(&pool, &Address::generate(&e));
+    contracts.backstop.add_reward(&pool, &None);
 
     (contracts, pool)
 }
