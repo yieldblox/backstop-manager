@@ -4,60 +4,74 @@ use crate::{
         comet::Client as CometClient,
     },
     errors::BlendLockupError,
-    storage,
+    storage::{self, Manager},
 };
-use blend_contract_sdk::{backstop::Client as BackstopClient, emitter::Client as EmitterClient};
+use blend_contract_sdk::backstop::Client as BackstopClient;
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, panic_with_error,
-    token::TokenClient,
     unwrap::UnwrapOptimized,
     vec, Address, Env, IntoVal, Symbol, Vec,
 };
 
+const MAX_VALID_LIST_LEN: u32 = 4;
+
 #[contract]
-pub struct BlendLockup;
+pub struct BackstopManager;
 
 #[contractimpl]
-impl BlendLockup {
+impl BackstopManager {
     /********** Constructor **********/
 
-    /// Initialize the contract
+    /// Initialize the backstop manager
     ///
     /// ### Arguments
-    /// * owner - The owner of the contract
+    /// * owner - The address of the owner of the funds
+    /// * manager - The address of the manager of the funds
     /// * emitter - The address of the emitter contract
     /// * bootstrapper - The address of the backstop bootstrapper contract
-    /// * unlock - The unlock time (in seconds since epoch)
+    /// * backstop_token - The address of the backstop token the manager can interact with. This is fixed
+    ///                    as the backstop manager only supports the BLND-USDC LP token as the backstop token.
+    /// * backstops - The addresses of the backstops the manager can interact with initially
+    /// * pools - The addresses of the pools the manager can interact with initially
     ///
     /// ### Errors
     /// * AlreadyInitializedError - The contract has already been initialized
-    pub fn initialize(
+    pub fn __constructor(
         e: Env,
         owner: Address,
+        manager: Address,
+        admin_scope: u32,
         emitter: Address,
         bootstrapper: Address,
-        unlock: u64,
+        backstop_token: Address,
+        backstops: Vec<Address>,
+        pools: Vec<Address>,
     ) {
-        if storage::get_is_init(&e) {
-            panic_with_error!(&e, BlendLockupError::AlreadyInitializedError);
-        }
-        storage::extend_instance(&e);
-
-        if unlock <= e.ledger().timestamp() {
-            panic_with_error!(&e, BlendLockupError::InvalidUnlockTime);
-        }
         storage::set_owner(&e, &owner);
+        if admin_scope > 2 {
+            panic_with_error!(&e, BlendLockupError::InvalidScope);
+        }
+        storage::set_manager(
+            &e,
+            &Manager {
+                id: manager,
+                scope: admin_scope,
+            },
+        );
         storage::set_emitter(&e, &emitter);
-        storage::set_unlock(&e, unlock);
         storage::set_backstop_bootstrapper(&e, bootstrapper);
+        storage::set_backstop_token(&e, backstop_token);
 
-        let backstop = EmitterClient::new(&e, &emitter).get_backstop();
-        let backstop_token = BackstopClient::new(&e, &backstop).backstop_token();
-        storage::set_valid_backstops(&e, &vec![&e, backstop]);
-        storage::set_valid_backstop_tokens(&e, &vec![&e, backstop_token]);
-
-        storage::set_is_init(&e);
+        if backstops.len() > MAX_VALID_LIST_LEN {
+            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+        }
+        if pools.len() > MAX_VALID_LIST_LEN {
+            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+        }
+        storage::set_valid_backstops(&e, &backstops);
+        storage::set_valid_pools(&e, &pools);
+        storage::extend_instance(&e);
     }
 
     /********** Read-Only **********/
@@ -67,9 +81,14 @@ impl BlendLockup {
         storage::get_owner(&e)
     }
 
-    /// Get unlock time of the lockup
-    pub fn unlock(e: Env) -> u64 {
-        storage::get_unlock(&e)
+    /// Get admin
+    pub fn admin(e: Env) -> Address {
+        storage::get_owner(&e)
+    }
+
+    /// Get the status of an admin
+    pub fn admin_status(e: Env) -> bool {
+        storage::get_owner(&e) == storage::get_owner(&e)
     }
 
     /// Get the emitter contract
@@ -77,90 +96,128 @@ impl BlendLockup {
         storage::get_emitter(&e)
     }
 
-    /// Get the backstop contracts that have been recorded by the emitter
+    /// Get the backstop bootstrapper contract
+    pub fn backstop_bootstrapper(e: Env) -> Address {
+        storage::get_backstop_bootstrapper(&e)
+    }
+
+    /// Get the backstops this contract can interact with
     pub fn backstops(e: Env) -> Vec<Address> {
         storage::get_valid_backstops(&e)
     }
 
-    /// Get the backstop token contracts that have been recorded by the emitter
-    pub fn backstop_tokens(e: Env) -> Vec<Address> {
-        storage::get_valid_backstop_tokens(&e)
+    /// Get the pools this contract can interact with
+    pub fn pools(e: Env) -> Vec<Address> {
+        storage::get_valid_pools(&e)
     }
 
-    /********** Write **********/
+    /********** Owner **********/
 
-    /// (Only Owner) Update the backstop contract and token from the emitter contract.
-    pub fn update_backstop(e: Env) {
-        let owner = storage::get_owner(&e);
-        owner.require_auth();
-        storage::extend_instance(&e);
-
-        let emitter = storage::get_emitter(&e);
-        let new_backstop = EmitterClient::new(&e, &emitter).get_backstop();
-        let new_backstop_token = BackstopClient::new(&e, &new_backstop).backstop_token();
-
-        let mut backstops = storage::get_valid_backstops(&e);
-        if !backstops.contains(&new_backstop) {
-            backstops.push_back(new_backstop);
-            storage::set_valid_backstops(&e, &backstops);
-        }
-        let mut backstop_tokens = storage::get_valid_backstop_tokens(&e);
-        if !backstop_tokens.contains(&new_backstop_token) {
-            backstop_tokens.push_back(new_backstop_token);
-            storage::set_valid_backstop_tokens(&e, &backstop_tokens);
-        }
-    }
-
-    /// (Only Owner) Claim assets from the lockup
+    /// (Only Owner) Set the manager for the contract
     ///
     /// ### Arguments
-    /// * `assets` - The Vec of addresses of the assets to claim
-    ///
-    /// ### Errors
-    /// * InvalidUnlockTime - The unlock time has not been reached
-    pub fn claim(e: Env, assets: Vec<Address>) {
+    /// * `manager` - The address of the manager
+    /// * `scope` - The scope of the manager. 0 = None, 1 = Low, 2 = High
+    pub fn set_manager(e: Env, manager: Address, scope: u32) {
         let owner = storage::get_owner(&e);
         owner.require_auth();
         storage::extend_instance(&e);
 
-        let unlock_time = storage::get_unlock(&e);
-        if unlock_time > e.ledger().timestamp() {
-            panic_with_error!(&e, BlendLockupError::InvalidUnlockTime);
+        if scope > 2 {
+            panic_with_error!(&e, BlendLockupError::InvalidScope);
         }
-        for asset in assets.iter() {
-            let token_client = TokenClient::new(&e, &asset);
-            let balance = token_client.balance(&e.current_contract_address());
-            token_client.transfer(&e.current_contract_address(), &owner, &balance);
-        }
+
+        storage::set_manager(&e, &Manager { id: manager, scope });
     }
+
+    /// (Only Owner) Set the backstop bootstrapper contract
+    ///
+    /// ### Arguments
+    /// * `bootstrapper` - The address of the backstop bootstrapper contract
+    pub fn set_backstop_bootstrapper(e: Env, bootstrapper: Address) {
+        let owner = storage::get_owner(&e);
+        owner.require_auth();
+        storage::extend_instance(&e);
+
+        storage::set_backstop_bootstrapper(&e, bootstrapper);
+    }
+
+    /// (Only Owner) Set the list of valid backstops
+    ///
+    /// ### Arguments
+    /// * `backstops` - The addresses of the backstops the manager can interact with
+    pub fn set_backstops(e: Env, backstops: Vec<Address>) {
+        let owner = storage::get_owner(&e);
+        owner.require_auth();
+        storage::extend_instance(&e);
+        if backstops.len() > MAX_VALID_LIST_LEN {
+            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+        }
+        storage::set_valid_backstops(&e, &backstops);
+    }
+
+    /// (Only Owner) Set the list of valid pools
+    ///
+    /// ### Arguments
+    /// * `pools` - The addresses of the backstops the manager can interact with
+    pub fn set_pools(e: Env, pools: Vec<Address>) {
+        let owner = storage::get_owner(&e);
+        owner.require_auth();
+        storage::extend_instance(&e);
+        if pools.len() > MAX_VALID_LIST_LEN {
+            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+        }
+        storage::set_valid_pools(&e, &pools);
+    }
+
+    /********** Manager **********/
 
     /***** Backstop Interactions *****/
 
-    /// (Only Owner) Deposit "amount" backstop tokens from the lockup into the backstop for "pool_address"
+    /// (Manager, Low) Claim backstop deposit emissions from a list of pools for the lockup
+    ///
+    /// Returns the amount of BLND emissions claimed
+    ///
+    /// ### Arguments
+    /// * `from` - The caller of the function
+    /// * `backstop` - The address of the backstop contract
+    /// * `pool_address` - The address of the pool to claim from
+    ///
+    /// ### Errors
+    /// If an invalid pool address is included
+    pub fn b_claim(e: Env, from: Address, backstop: Address, pool_address: Address) -> i128 {
+        require_auth_with_scope(&e, from, 0);
+        require_backstop_and_pool_valid(&e, &backstop, &pool_address);
+        storage::extend_instance(&e);
+
+        BackstopClient::new(&e, &backstop).claim(
+            &e.current_contract_address(),
+            &vec![&e, pool_address],
+            &e.current_contract_address(),
+        )
+    }
+
+    /// (Manger, Medium) Deposit "amount" backstop tokens from the lockup into the backstop for "pool_address"
     ///
     /// Returns the number of backstop pool shares minted
     ///
     /// ### Arguments
+    /// * `from` - The caller of the function
     /// * `backstop` - The address of the backstop contract
-    /// * `backstop_token` - The address of the backstop token
     /// * `pool_address` - The address of the pool
     /// * `amount` - The amount of tokens to deposit
     pub fn b_deposit(
         e: Env,
+        from: Address,
         backstop: Address,
-        backstop_token: Address,
         pool_address: Address,
         amount: i128,
     ) -> i128 {
-        storage::get_owner(&e).require_auth();
+        require_auth_with_scope(&e, from, 1);
+        require_backstop_and_pool_valid(&e, &backstop, &pool_address);
         storage::extend_instance(&e);
 
-        let backstops = storage::get_valid_backstops(&e);
-        let backstop_tokens = storage::get_valid_backstop_tokens(&e);
-        if !backstops.contains(&backstop) || !backstop_tokens.contains(&backstop_token) {
-            panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
-        }
-
+        let backstop_token = storage::get_backstop_token(&e);
         e.authorize_as_current_contract(vec![
             &e,
             InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -184,22 +241,25 @@ impl BlendLockup {
         )
     }
 
-    /// (Only Owner) Queue deposited pool shares from the lockup for withdraw from a backstop of a pool
+    /// (Manager, Medium) Queue deposited pool shares from the lockup for withdraw from a backstop of a pool
     ///
     /// Returns the created queue for withdrawal
     ///
     /// ### Arguments
+    /// * `from` - The address of the backstop contract
     /// * `backstop` - The address of the backstop contract
     /// * `pool_address` - The address of the pool
     /// * `amount` - The amount of shares to queue for withdraw
-    pub fn b_queue_withdrawal(e: Env, backstop: Address, pool_address: Address, amount: i128) {
-        storage::get_owner(&e).require_auth();
+    pub fn b_queue_withdrawal(
+        e: Env,
+        from: Address,
+        backstop: Address,
+        pool_address: Address,
+        amount: i128,
+    ) {
+        require_auth_with_scope(&e, from, 1);
+        require_backstop_and_pool_valid(&e, &backstop, &pool_address);
         storage::extend_instance(&e);
-
-        let backstops = storage::get_valid_backstops(&e);
-        if !backstops.contains(&backstop) {
-            panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
-        }
 
         BackstopClient::new(&e, &backstop).queue_withdrawal(
             &e.current_contract_address(),
@@ -208,20 +268,23 @@ impl BlendLockup {
         );
     }
 
-    /// (Only Owner) Dequeue a currently queued pool share withdraw for the lockup from the backstop of a pool
+    /// (Manager, Medium) Dequeue a currently queued pool share withdraw for the lockup from the backstop of a pool
     ///
     /// ### Arguments
+    /// * `from` - The caller of the function
     /// * `backstop` - The address of the backstop contract
     /// * `pool_address` - The address of the pool
     /// * `amount` - The amount of shares to dequeue
-    pub fn b_dequeue_withdrawal(e: Env, backstop: Address, pool_address: Address, amount: i128) {
-        storage::get_owner(&e).require_auth();
+    pub fn b_dequeue_withdrawal(
+        e: Env,
+        from: Address,
+        backstop: Address,
+        pool_address: Address,
+        amount: i128,
+    ) {
+        require_auth_with_scope(&e, from, 1);
+        require_backstop_and_pool_valid(&e, &backstop, &pool_address);
         storage::extend_instance(&e);
-
-        let backstops = storage::get_valid_backstops(&e);
-        if !backstops.contains(&backstop) {
-            panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
-        }
 
         BackstopClient::new(&e, &backstop).dequeue_withdrawal(
             &e.current_contract_address(),
@@ -230,79 +293,47 @@ impl BlendLockup {
         )
     }
 
-    /// (Only Owner) Withdraw shares from the lockup's withdraw queue for a backstop of a pool
+    /// (Manager, High) Withdraw shares from the lockup's withdraw queue for a backstop of a pool
     ///
     /// Returns the amount of tokens returned
     ///
     /// ### Arguments
+    /// * `from` - The caller of the function
     /// * `backstop` - The address of the backstop contract
     /// * `pool_address` - The address of the pool
     /// * `amount` - The amount of shares to withdraw
-    pub fn b_withdraw(e: Env, from: Address, pool_address: Address, amount: i128) -> i128 {
-        storage::get_owner(&e).require_auth();
+    pub fn b_withdraw(
+        e: Env,
+        from: Address,
+        backstop: Address,
+        pool_address: Address,
+        amount: i128,
+    ) -> i128 {
+        require_auth_with_scope(&e, from, 2);
+        require_backstop_and_pool_valid(&e, &backstop, &pool_address);
         storage::extend_instance(&e);
 
-        let backstops = storage::get_valid_backstops(&e);
-        if !backstops.contains(&from) {
-            panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
-        }
-
-        BackstopClient::new(&e, &from).withdraw(
+        BackstopClient::new(&e, &backstop).withdraw(
             &e.current_contract_address(),
             &pool_address,
             &amount,
         )
     }
 
-    /// (Only Owner) Claim backstop deposit emissions from a list of pools for the lockup
-    ///
-    /// Returns the amount of BLND emissions claimed
-    ///
-    /// ### Arguments
-    /// * `backstop` - The address of the backstop contract
-    /// * `pool_addresses` - The Vec of addresses to claim backstop deposit emissions from
-    ///
-    /// ### Errors
-    /// If an invalid pool address is included
-    pub fn b_claim(e: Env, backstop: Address, pool_addresses: Vec<Address>) -> i128 {
-        storage::get_owner(&e).require_auth();
-        storage::extend_instance(&e);
-
-        let backstops = storage::get_valid_backstops(&e);
-        if !backstops.contains(&backstop) {
-            panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
-        }
-
-        BackstopClient::new(&e, &backstop).claim(
-            &e.current_contract_address(),
-            &pool_addresses,
-            &e.current_contract_address(),
-        )
-    }
-
     /***** Backstop Token Interactions *****/
 
-    /// (Only Owner) Join a backstop token's liquidity pool. Requires that the backstop token implements the Comet interface.
+    /// (Manager, High) Join the BLND-USDC LP.
     ///
     /// ### Arguments
+    /// * `from` - The caller of the function
     /// * `backstop_token` - The address of the backstop token
     /// * `pool_amount_out` - The amount of pool shares to mint
     /// * `max_amounts_in` - The maximum amount of tokens to deposit
-    pub fn c_join_pool(
-        e: Env,
-        backstop_token: Address,
-        pool_amount_out: i128,
-        max_amounts_in: Vec<i128>,
-    ) {
-        let owner = storage::get_owner(&e);
-        owner.require_auth();
+    pub fn c_join_pool(e: Env, from: Address, pool_amount_out: i128, max_amounts_in: Vec<i128>) {
+        require_auth_with_scope(&e, from, 2);
         storage::extend_instance(&e);
 
-        let backstop_tokens = storage::get_valid_backstop_tokens(&e);
-        if !backstop_tokens.contains(&backstop_token) {
-            panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
-        }
-
+        let backstop_token = storage::get_backstop_token(&e);
         let comet = CometClient::new(&e, &backstop_token);
         let comet_tokens = comet.get_tokens();
         let mut auths = vec![&e];
@@ -333,27 +364,17 @@ impl BlendLockup {
         );
     }
 
-    /// (Only Owner) Exit a backstop token's liquidity pool. Requires that the backstop token implements the Comet interface.
+    /// (Manager, High) Exit a backstop token's liquidity pool.
     ///
     /// ### Arguments
-    /// * `backstop_token` - The address of the backstop token
+    /// * `from` - The caller of the function
     /// * `burn_amount` - The amount of pool shares to burn
     /// * `min_amounts_out` - The minimum amount of tokens to receive
-    pub fn c_exit_pool(
-        e: Env,
-        backstop_token: Address,
-        burn_amount: i128,
-        min_amounts_out: Vec<i128>,
-    ) {
-        let owner = storage::get_owner(&e);
-        owner.require_auth();
+    pub fn c_exit_pool(e: Env, from: Address, burn_amount: i128, min_amounts_out: Vec<i128>) {
+        require_auth_with_scope(&e, from, 2);
         storage::extend_instance(&e);
 
-        let backstop_tokens = storage::get_valid_backstop_tokens(&e);
-        if !backstop_tokens.contains(&backstop_token) {
-            panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
-        }
-
+        let backstop_token = storage::get_backstop_token(&e);
         let comet = CometClient::new(&e, &backstop_token);
         comet.exit_pool(
             &burn_amount,
@@ -364,9 +385,87 @@ impl BlendLockup {
 
     /***** Backstop Bootstrapper Interactions *****/
 
-    /// (Only Owner) Creates a Backstop Bootstrapping with BLND
+    /// (Manager, Low) Claims the proceeds of a backstop bootstrapping
     ///
     /// ### Arguments
+    /// * `from` - The caller of the function
+    /// * `bootstrap_id` - The id of the bootstrapper
+    /// * `backstop` - The address of the backstop the bootstrap is for
+    pub fn bb_claim_bootstrap(e: Env, from: Address, bootstrap_id: u32, backstop: Address) {
+        require_auth_with_scope(&e, from, 0);
+        storage::extend_instance(&e);
+
+        // no need to validate backstop arg, as it's just used to pre-auth the deposit, and is never
+        // invoked directly. If an invalid arg is passed, the pre-auth will be invalid.
+
+        let backstop_bootstrapper_client =
+            BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
+        let bootstrap: Bootstrap = backstop_bootstrapper_client.get_bootstrap(&bootstrap_id);
+        let comet_client = CometClient::new(&e, &storage::get_backstop_token(&e));
+
+        let backstop_token_amount = bootstrap.data.total_backstop_tokens
+            * (comet_client.get_normalized_weight(
+                &comet_client
+                    .get_tokens()
+                    .get(bootstrap.config.token_index)
+                    .unwrap_optimized(),
+            ) as i128)
+            / 1_000_0000;
+
+        e.authorize_as_current_contract(vec![
+            &e,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: backstop.clone(),
+                    fn_name: Symbol::new(&e, "deposit"),
+                    args: vec![
+                        &e,
+                        e.current_contract_address().into_val(&e),
+                        bootstrap.config.pool.into_val(&e),
+                        backstop_token_amount.into_val(&e),
+                    ],
+                },
+                sub_invocations: vec![
+                    &e,
+                    InvokerContractAuthEntry::Contract(SubContractInvocation {
+                        context: ContractContext {
+                            contract: comet_client.address,
+                            fn_name: Symbol::new(&e, "transfer"),
+                            args: vec![
+                                &e,
+                                e.current_contract_address().into_val(&e),
+                                backstop.into_val(&e),
+                                backstop_token_amount.into_val(&e),
+                            ],
+                        },
+                        sub_invocations: vec![&e],
+                    }),
+                ],
+            }),
+        ]);
+
+        backstop_bootstrapper_client.claim(&e.current_contract_address(), &bootstrap_id);
+    }
+
+    /// (Manager, Low) Refunds a cancelled backstop bootstrapping
+    ///
+    /// ### Arguments
+    /// * `from` - The caller of the function
+    /// * `bootstrap_id` - The id of the bootstrapper
+    pub fn bb_refund_bootstrap(e: Env, from: Address, bootstrap_id: u32) {
+        require_auth_with_scope(&e, from, 0);
+        storage::extend_instance(&e);
+
+        let backstop_bootstrapper_client =
+            BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
+
+        backstop_bootstrapper_client.refund(&e.current_contract_address(), &bootstrap_id);
+    }
+
+    /// (Manager, High) Creates a Backstop Bootstrapping with BLND
+    ///
+    /// ### Arguments
+    /// * `from` - The caller of the function
     /// * `bootstrap_token` - The address of the bootstrap token
     /// * `bootstrap_amount` - The amount of tokens to bootstrap
     /// * `pair_min` - The minimum amount of pool shares to mint
@@ -374,25 +473,20 @@ impl BlendLockup {
     /// * `pool_address` - The address of the pool
     pub fn bb_start_bootstrap(
         e: Env,
+        from: Address,
         bootstrap_token_index: u32,
         bootstrap_amount: i128,
         pair_min: i128,
         duration: u32,
         pool_address: Address,
     ) {
-        let owner = storage::get_owner(&e);
-        owner.require_auth();
+        require_auth_with_scope(&e, from, 2);
         storage::extend_instance(&e);
 
-        // backstop bootstrapper will only work with the first backstop token
-        let bootstrap_token: Address = match CometClient::new(
-            &e,
-            &storage::get_valid_backstop_tokens(&e)
-                .get(0)
-                .unwrap_optimized(),
-        )
-        .get_tokens()
-        .get(bootstrap_token_index)
+        let backstop_token = storage::get_backstop_token(&e);
+        let bootstrap_token: Address = match CometClient::new(&e, &backstop_token)
+            .get_tokens()
+            .get(bootstrap_token_index)
         {
             Some(address) => address,
             None => panic_with_error!(e, BlendLockupError::InvalidTokenIndex),
@@ -425,82 +519,35 @@ impl BlendLockup {
             token_index: bootstrap_token_index,
         });
     }
+}
 
-    /// (Only Owner) Claims the proceeds of a backstop bootstrapping
-    ///
-    /// ### Arguments
-    /// * `bootstrap_id` - The id of the bootstrapper
-    /// * `bootstrap_token_index` - The index of the token being bootstrapped (must match with claimed bootstrap)
-    pub fn bb_claim_bootstrap(e: Env, bootstrap_id: u32) {
-        let owner = storage::get_owner(&e);
-        owner.require_auth();
-        storage::extend_instance(&e);
-
-        let backstop_bootstrapper_client =
-            BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
-        let bootstrap: Bootstrap = backstop_bootstrapper_client.get_bootstrap(&bootstrap_id);
-        // bootstrapper will only work with the first backstop
-        let valid_backstop = storage::get_valid_backstops(&e).get_unchecked(0);
-        let valid_backstop_token = storage::get_valid_backstop_tokens(&e).get_unchecked(0);
-
-        let comet_client = CometClient::new(&e, &valid_backstop_token);
-
-        let backstop_token_amount = bootstrap.data.total_backstop_tokens
-            * (comet_client.get_normalized_weight(
-                &comet_client
-                    .get_tokens()
-                    .get(bootstrap.config.token_index)
-                    .unwrap_optimized(),
-            ) as i128)
-            / 1_000_0000;
-
-        e.authorize_as_current_contract(vec![
-            &e,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: valid_backstop.clone(),
-                    fn_name: Symbol::new(&e, "deposit"),
-                    args: vec![
-                        &e,
-                        e.current_contract_address().into_val(&e),
-                        bootstrap.config.pool.into_val(&e),
-                        backstop_token_amount.into_val(&e),
-                    ],
-                },
-                sub_invocations: vec![
-                    &e,
-                    InvokerContractAuthEntry::Contract(SubContractInvocation {
-                        context: ContractContext {
-                            contract: comet_client.address,
-                            fn_name: Symbol::new(&e, "transfer"),
-                            args: vec![
-                                &e,
-                                e.current_contract_address().into_val(&e),
-                                valid_backstop.into_val(&e),
-                                backstop_token_amount.into_val(&e),
-                            ],
-                        },
-                        sub_invocations: vec![&e],
-                    }),
-                ],
-            }),
-        ]);
-
-        backstop_bootstrapper_client.claim(&e.current_contract_address(), &bootstrap_id);
+/// Authorize an action based on a provide scope for from. If `from` is the owner,
+/// then the action is authorized. If `from` is the manager, then the manager is validated
+/// to have the appropriate scope.
+///
+/// THIS CALLS REQUIRE AUTH FOR FROM
+///
+/// ### Arguments
+/// * `from` - The address of the caller
+/// * `scope` - The scope required for the action
+///
+/// ### Errors
+/// * UnauthorizedError - The caller is not authorized to perform the action
+fn require_auth_with_scope(e: &Env, from: Address, scope: u32) {
+    from.require_auth();
+    if from == storage::get_owner(&e) {
+        return;
     }
+    let manager = storage::get_manager(&e);
+    if manager.id != from || manager.scope < scope {
+        panic_with_error!(&e, BlendLockupError::UnauthorizedError);
+    }
+}
 
-    /// (Only Owner) Refunds a cancelled backstop bootstrapping
-    ///
-    /// ### Arguments
-    /// * `bootstrap_id` - The id of the bootstrapper
-    pub fn bb_refund_bootstrap(e: Env, bootstrap_id: u32) {
-        let owner = storage::get_owner(&e);
-        owner.require_auth();
-        storage::extend_instance(&e);
-
-        let backstop_bootstrapper_client =
-            BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
-
-        backstop_bootstrapper_client.refund(&e.current_contract_address(), &bootstrap_id);
+fn require_backstop_and_pool_valid(e: &Env, backstop: &Address, pool_address: &Address) {
+    let backstops = storage::get_valid_backstops(&e);
+    let pools = storage::get_valid_pools(&e);
+    if !backstops.contains(backstop) || !pools.contains(pool_address) {
+        panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
     }
 }

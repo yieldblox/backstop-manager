@@ -1,4 +1,17 @@
-use soroban_sdk::{unwrap::UnwrapOptimized, Address, Env, Symbol, Vec};
+use soroban_sdk::{contracttype, unwrap::UnwrapOptimized, Address, Env, Symbol, Vec};
+
+/********** Storage Types **********/
+
+#[contracttype]
+pub struct Manager {
+    /// The address of the manager
+    pub id: Address,
+    /// The scope of the manager
+    /// 0 -> Low
+    /// 1 -> Medium
+    /// 2 -> High
+    pub scope: u32,
+}
 
 /********** Ledger Thresholds **********/
 
@@ -10,12 +23,12 @@ const LEDGER_THRESHOLD: u32 = LEDGER_BUMP - 20 * ONE_DAY_LEDGERS;
 /********** Ledger Keys **********/
 
 const OWNER_KEY: &str = "Owner";
+const MANAGER_KEY: &str = "Manager";
 const EMITTER_KEY: &str = "Emit";
-const BACKSTOP_KEY: &str = "Bstop";
+const BACKSTOPS_KEY: &str = "Bstop";
+const POOLS_KEY: &str = "Pools";
+const BACKSTOP_BOOTSTRAPPER_KEY: &str = "BstopBoot";
 const BACKSTOP_TOKEN_KEY: &str = "BstopTkn";
-const IS_INIT_KEY: &str = "IsInit";
-const UNLOCK_KEY: &str = "Unlock";
-const BACKSTOP_BOOTSTRAPPER_KEY: &str = "BstopBootstrapper";
 
 /********** Ledger Thresholds **********/
 
@@ -28,24 +41,12 @@ pub fn extend_instance(e: &Env) {
 
 /********** Instance **********/
 
-/// Check if the contract has been initialized
-pub fn get_is_init(e: &Env) -> bool {
-    e.storage().instance().has(&Symbol::new(e, IS_INIT_KEY))
-}
-
-/// Set the contract as initialized
-pub fn set_is_init(e: &Env) {
-    e.storage()
-        .instance()
-        .set::<Symbol, bool>(&Symbol::new(e, IS_INIT_KEY), &true);
-}
-
 /// Get the owner address
 pub fn get_owner(e: &Env) -> Address {
     e.storage()
         .instance()
         .get::<Symbol, Address>(&Symbol::new(e, OWNER_KEY))
-        .unwrap()
+        .unwrap_optimized()
 }
 
 /// Set the owner address
@@ -55,12 +56,27 @@ pub fn set_owner(e: &Env, owner: &Address) {
         .set::<Symbol, Address>(&Symbol::new(e, OWNER_KEY), &owner);
 }
 
+/// Get the manager for the contract
+pub fn get_manager(e: &Env) -> Manager {
+    e.storage()
+        .instance()
+        .get::<Symbol, Manager>(&Symbol::new(e, MANAGER_KEY))
+        .unwrap_optimized()
+}
+
+/// Set the manager for the contract
+pub fn set_manager(e: &Env, manager: &Manager) {
+    e.storage()
+        .instance()
+        .set::<Symbol, Manager>(&Symbol::new(e, MANAGER_KEY), manager);
+}
+
 /// Get the emitter address
 pub fn get_emitter(e: &Env) -> Address {
     e.storage()
         .instance()
         .get::<Symbol, Address>(&Symbol::new(e, EMITTER_KEY))
-        .unwrap()
+        .unwrap_optimized()
 }
 
 /// Set the emitter address
@@ -70,67 +86,56 @@ pub fn set_emitter(e: &Env, emitter: &Address) {
         .set::<Symbol, Address>(&Symbol::new(e, EMITTER_KEY), &emitter);
 }
 
-/// Get the time of the lockup unlock
-pub fn get_unlock(e: &Env) -> u64 {
-    e.storage()
-        .instance()
-        .get::<Symbol, u64>(&Symbol::new(e, UNLOCK_KEY))
-        .unwrap_or(0_u64)
-}
-
-/// Set the mapping of sequence to unlock percentage
-pub fn set_unlock(e: &Env, unlock: u64) {
-    e.storage()
-        .instance()
-        .set::<Symbol, u64>(&Symbol::new(e, UNLOCK_KEY), &unlock);
-}
-
-/// Get the backstop bootstrapper token
+/// Get the backstop bootstrapper address
 pub fn get_backstop_bootstrapper(e: &Env) -> Address {
     e.storage()
         .instance()
         .get::<Symbol, Address>(&Symbol::new(e, BACKSTOP_BOOTSTRAPPER_KEY))
-        .unwrap()
+        .unwrap_optimized()
 }
 
-/// Set the backstop bootstrapper token
+/// Set the backstop bootstrapper address
 pub fn set_backstop_bootstrapper(e: &Env, bootstrapper: Address) {
     e.storage()
         .instance()
         .set::<Symbol, Address>(&Symbol::new(e, BACKSTOP_BOOTSTRAPPER_KEY), &bootstrapper);
 }
 
-/********** Persistant **********/
+/// Get the backstop token
+pub fn get_backstop_token(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get::<Symbol, Address>(&Symbol::new(e, BACKSTOP_TOKEN_KEY))
+        .unwrap_optimized()
+}
 
-/// Get an array of all valid backstops the emitter has recorded
+/// Set the backstop token
+pub fn set_backstop_token(e: &Env, bootstrapper: Address) {
+    e.storage()
+        .instance()
+        .set::<Symbol, Address>(&Symbol::new(e, BACKSTOP_TOKEN_KEY), &bootstrapper);
+}
+
+/// Get an array of all valid backstops the vault can interact with
 pub fn get_valid_backstops(e: &Env) -> Vec<Address> {
-    let key = Symbol::new(e, BACKSTOP_KEY);
+    let key = Symbol::new(e, BACKSTOPS_KEY);
     e.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
-    e.storage()
-        .persistent()
+        .instance()
         .get::<Symbol, Vec<Address>>(&key)
         .unwrap_optimized()
 }
 
 /// Set the valid backstop addresses
 pub fn set_valid_backstops(e: &Env, backstop: &Vec<Address>) {
-    let key = Symbol::new(e, BACKSTOP_KEY);
+    let key = Symbol::new(e, BACKSTOPS_KEY);
     e.storage()
-        .persistent()
+        .instance()
         .set::<Symbol, Vec<Address>>(&key, &backstop);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
 }
 
 /// Get the backstop token address
-pub fn get_valid_backstop_tokens(e: &Env) -> Vec<Address> {
-    let key = Symbol::new(e, BACKSTOP_TOKEN_KEY);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+pub fn get_valid_pools(e: &Env) -> Vec<Address> {
+    let key = Symbol::new(e, POOLS_KEY);
     e.storage()
         .persistent()
         .get::<Symbol, Vec<Address>>(&key)
@@ -138,12 +143,9 @@ pub fn get_valid_backstop_tokens(e: &Env) -> Vec<Address> {
 }
 
 /// Set the backstop token address
-pub fn set_valid_backstop_tokens(e: &Env, backstop_token: &Vec<Address>) {
-    let key = Symbol::new(e, BACKSTOP_TOKEN_KEY);
+pub fn set_valid_pools(e: &Env, pools: &Vec<Address>) {
+    let key = Symbol::new(e, POOLS_KEY);
     e.storage()
         .persistent()
-        .set::<Symbol, Vec<Address>>(&key, &backstop_token);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        .set::<Symbol, Vec<Address>>(&key, &pools);
 }

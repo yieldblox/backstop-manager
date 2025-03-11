@@ -15,7 +15,9 @@ pub enum BlendLockupError {
     BalanceError = 10,
     OverflowError = 12,
 
-    InvalidUnlockTime = 100,
-    InvalidContractAddress = 101,
-    InvalidTokenIndex = 102,
+    ContractListOverMax = 100,
+    ContractExists = 101,
+    InvalidContractAddress = 102,
+    InvalidScope = 103,
+    InvalidTokenIndex = 104,
 }
