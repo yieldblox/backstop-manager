@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use blend_contract_sdk::testutils::BlendFixture;
+use blend_contract_sdk::{pool::Client as PoolClient, testutils::BlendFixture};
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Ledger as _, LedgerInfo},
-    Address, BytesN, Env, String,
+    Address, BytesN, Env, String, Vec,
 };
 
 use crate::dependencies::bootstrapper;
@@ -17,21 +17,41 @@ mod contract {
 /// Create a backstop manager contract via wasm
 ///
 /// ### Arguments
-/// * `owner` - The address of the owner
-/// * `emitter` - The address of the emitter
-/// * `unlock` - The unlock ledger time (in seconds)
+/// * owner - The address of the owner of the funds
+/// * manager - The address of the manager of the funds
+/// * emitter - The address of the emitter contract
+/// * bootstrapper - The address of the backstop bootstrapper contract
+/// * backstop_token - The address of the backstop token the manager can interact with. This is fixed
+///                    as the backstop manager only supports the BLND-USDC LP token as the backstop token.
+/// * backstops - The addresses of the backstops the manager can interact with initially
+/// * pools - The addresses of the pools the manager can interact with initially
 pub fn create_backstop_manager_wasm<'a>(
     e: &Env,
     owner: &Address,
+    manager: &Address,
+    admin_scope: &u32,
     emitter: &Address,
-    unlock: &u64,
     bootstrapper: &Address,
+    backstop_token: &Address,
+    backstops: &Vec<Address>,
+    pools: &Vec<Address>,
 ) -> (Address, contract::Client<'a>) {
-    let token_lockup_address = e.register(contract::WASM, {});
-    let token_lockup_client: contract::Client<'a> =
-        contract::Client::new(&e, &token_lockup_address);
-    token_lockup_client.initialize(owner, emitter, bootstrapper, unlock);
-    (token_lockup_address, token_lockup_client)
+    let backstop_manager_address = e.register(
+        contract::WASM,
+        (
+            owner,
+            manager,
+            admin_scope,
+            emitter,
+            bootstrapper,
+            backstop_token,
+            backstops.clone(),
+            pools.clone(),
+        ),
+    );
+    let backstop_manager_client: contract::Client<'a> =
+        contract::Client::new(&e, &backstop_manager_address);
+    (backstop_manager_address, backstop_manager_client)
 }
 
 /***** Env Utils *****/
@@ -53,7 +73,7 @@ impl EnvTestUtils for Env {
     fn jump(&self, ledgers: u32) {
         self.ledger().set(LedgerInfo {
             timestamp: self.ledger().timestamp().saturating_add(ledgers as u64 * 5),
-            protocol_version: 20,
+            protocol_version: 22,
             sequence_number: self.ledger().sequence().saturating_add(ledgers),
             network_id: Default::default(),
             base_reserve: 10,
@@ -66,7 +86,7 @@ impl EnvTestUtils for Env {
     fn set_default_info(&self) {
         self.ledger().set(LedgerInfo {
             timestamp: 1441065600, // Sept 1st, 2015 12:00:00 AM UTC
-            protocol_version: 20,
+            protocol_version: 22,
             sequence_number: 100,
             network_id: Default::default(),
             base_reserve: 10,
@@ -109,9 +129,23 @@ pub fn create_blend_contracts<'a>(
         &2,
         &0,
     );
+    let pool_client = PoolClient::new(&e, &pool);
 
     contracts.backstop.deposit(&admin, &pool, &50_000_0000000);
     contracts.backstop.add_reward(&pool, &None);
+
+    // initialize emissions
+    contracts.emitter.distribute();
+    contracts.backstop.distribute();
+
+    e.jump(7 * ONE_DAY_LEDGERS);
+
+    // emit 7 days worth of emissions
+    contracts.emitter.distribute();
+    contracts.backstop.distribute();
+    pool_client.gulp_emissions();
+
+    e.jump(1);
 
     (contracts, pool)
 }

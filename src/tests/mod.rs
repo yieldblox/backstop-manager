@@ -1,5 +1,4 @@
 mod test_backstop_functions;
 mod test_backstop_token_functions;
 mod test_bootstrapper_functions;
-mod test_lockup;
-mod test_update_backstop;
+mod test_management;

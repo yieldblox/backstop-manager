@@ -6,6 +6,7 @@ The owner can:
 * Manage the manager key, including reducing the scope in which they can act
 * Add/remove pools that the contract can move funds between
 * Add/remove backstops that the contract can interact with
+* Transfer tokens from held by the manager contract
 * Perform all manager actions
 
 Manager actions are limited by scope. Their scope can be:
@@ -16,6 +17,7 @@ Manager actions are limited by scope. Their scope can be:
 All manager actions only allow funds to be held by the owner. They act on behalf of the owner with the funds held by the backstop manager contract.
 
 The admin can:
+* Refund tokens held by the manager contract to the owner (scope req. `Low`)
 * Claim emissions from a backstop (scope req. `Low`)
 * Deposit BLND-USDC LP tokens into a backstop (scope req. `Medium`)
 * Queue for withdraw funds from backstop (scope req. `Medium`)

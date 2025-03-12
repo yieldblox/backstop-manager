@@ -1,113 +1,158 @@
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::{Address as _, MockAuth, MockAuthInvoke},
-    token::{StellarAssetClient, TokenClient},
-    vec, Address, Env, IntoVal,
+use crate::testutils::{
+    create_backstop_bootstrapper, create_backstop_manager_wasm, create_blend_contracts,
+    EnvTestUtils,
 };
-use std::println;
-
-use crate::{
-    dependencies::bootstrapper::BootstrapConfig,
-    testutils::{
-        create_backstop_bootstrapper, create_blend_contracts, create_blend_lockup_wasm,
-        EnvTestUtils,
-    },
+use soroban_sdk::{
+    testutils::{Address as _, EnvTestConfig, MockAuth, MockAuthInvoke},
+    token::{StellarAssetClient, TokenClient},
+    vec, Address, Env, Error, IntoVal,
 };
 
 #[test]
 fn test_execute_bootstrapper_functions() {
-    let e = Env::default();
-    e.budget().reset_unlimited();
+    let e = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    e.cost_estimate().budget().reset_unlimited();
     e.set_default_info();
+    // auths get reset and tested for each manager function
     e.mock_all_auths();
 
     let bombadil = Address::generate(&e);
     let frodo = Address::generate(&e);
-    let usdc_id = e.register_stellar_asset_contract(bombadil.clone());
-    let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
-    let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
-    let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
+    let samwise = Address::generate(&e);
+    let usdc = e.register_stellar_asset_contract_v2(bombadil.clone());
+    let blnd = e.register_stellar_asset_contract_v2(bombadil.clone());
+    let usdc_admin_client = StellarAssetClient::new(&e, &usdc.address());
+    let blnd_admin_client = StellarAssetClient::new(&e, &blnd.address());
+    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd.address(), &usdc.address());
     let bootstrapper = create_backstop_bootstrapper(&e, &contracts);
-    let (_, blend_lockup_client) = create_blend_lockup_wasm(
+    let blnd_index: u32 = 0;
+
+    // start manager (samwise) at scope 1
+    let (_, manager_client) = create_backstop_manager_wasm(
         &e,
         &frodo,
+        &samwise,
+        &1,
         &contracts.emitter.address,
-        &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
         &bootstrapper.address,
+        &contracts.backstop_token.address,
+        &vec![&e, contracts.backstop.address.clone()],
+        &vec![&e, pool.clone()],
     );
 
-    // mint underlying tokens to the blend lockup contract
+    // mint underlying tokens to the backstop manager contract
     // create_blend_contracts sets up a comet LP with
     //  -> 10 BLND / share
     //  -> 0.25 USDC / share
-    let blnd_amount = &100_000_0000000;
-    let usdc_amount = &2500_0000000;
-    let blnd_index: u32 = 0;
-    blnd_admin_client.mint(&blend_lockup_client.address, blnd_amount);
-    usdc_admin_client.mint(&frodo, usdc_amount);
-    let usdc_balance: i128 = 2500_0000000;
+    //  -> 1000 shares available to mint
+    let blnd_balance_0 = 100_000_0000000;
+    let usdc_balance_0 = 2500_0000000;
+    blnd_admin_client.mint(&manager_client.address, &blnd_balance_0);
+    usdc_admin_client.mint(&frodo, &usdc_balance_0);
     let blnd_token = TokenClient::new(&e, &blnd_admin_client.address);
     let duration: u32 = 17280 + 1;
-    let min: i128 = 10_000_0000;
-    // create_bootstrap
+    let pair_min_usdc: i128 = 10_000_0000;
+
+    // create_bootstrap - validate requires scope 2 as manager
+    let blnd_bootstrap_amount = blnd_balance_0;
     e.set_auths(&[]);
-    blend_lockup_client
+    let bootstrap_scope_1 = manager_client
         .mock_auths(&[MockAuth {
-            address: &frodo,
+            address: &samwise,
             invoke: &MockAuthInvoke {
-                contract: &blend_lockup_client.address.clone(),
+                contract: &manager_client.address.clone(),
                 fn_name: &"bb_start_bootstrap",
                 args: vec![
                     &e,
-                    blnd_index.clone().into_val(&e),
-                    blnd_amount.clone().into_val(&e),
-                    min.clone().into_val(&e),
-                    duration.clone().into_val(&e),
-                    pool.clone().into_val(&e),
+                    samwise.into_val(&e),
+                    blnd_index.into_val(&e),
+                    blnd_bootstrap_amount.into_val(&e),
+                    pair_min_usdc.into_val(&e),
+                    duration.into_val(&e),
+                    pool.into_val(&e),
                 ],
-                sub_invokes: &[MockAuthInvoke {
-                    contract: &bootstrapper.address,
-                    fn_name: &"bootstrap",
-                    args: vec![
-                        &e,
-                        BootstrapConfig {
-                            token_index: 0,
-                            bootstrapper: blend_lockup_client.address.clone(),
-                            amount: blnd_amount.clone(),
-                            pair_min: 10_000_0000,
-                            close_ledger: (e.ledger().timestamp() + 17280 + 1) as u32,
-                            pool: pool.clone(),
-                        }
-                        .into_val(&e),
-                    ],
-                    sub_invokes: &[MockAuthInvoke {
-                        contract: &blnd_token.address,
-                        fn_name: &"transfer",
-                        args: vec![
-                            &e,
-                            blend_lockup_client.address.clone().into_val(&e),
-                            bootstrapper.address.clone().into_val(&e),
-                            blnd_amount.into_val(&e),
-                        ],
-                        sub_invokes: &[],
-                    }],
-                }],
+                sub_invokes: &[],
             },
         }])
-        .bb_start_bootstrap(&blnd_index, &blnd_amount, &min, &duration, &pool);
-
+        .try_bb_start_bootstrap(
+            &samwise,
+            &blnd_index,
+            &blnd_bootstrap_amount,
+            &pair_min_usdc,
+            &duration,
+            &pool,
+        );
     assert_eq!(
-        blnd_token.balance(&bootstrapper.address).clone(),
-        blnd_amount.clone()
+        bootstrap_scope_1.err(),
+        Some(Ok(Error::from_contract_error(4)))
     );
-    let backstop_token_balance = contracts
-        .backstop_token
-        .balance(&contracts.backstop.address);
+
+    /***** SCOPE 2 *****/
+
+    // set manager (samwise) to scope 2
+    e.set_auths(&[]);
+    manager_client
+        .mock_auths(&[MockAuth {
+            address: &frodo,
+            invoke: &MockAuthInvoke {
+                contract: &manager_client.address,
+                fn_name: &"set_manager",
+                args: vec![&e, samwise.into_val(&e), 2u32.into_val(&e)],
+                sub_invokes: &[],
+            },
+        }])
+        .set_manager(&samwise, &2u32);
+
+    // assert scope is 2
+    let manager = manager_client.manager();
+    assert_eq!(2, manager.scope);
+    assert_eq!(samwise, manager.id);
+
+    // create_bootstrap - as manager
+    e.set_auths(&[]);
+    manager_client
+        .mock_auths(&[MockAuth {
+            address: &samwise,
+            invoke: &MockAuthInvoke {
+                contract: &manager_client.address.clone(),
+                fn_name: &"bb_start_bootstrap",
+                args: vec![
+                    &e,
+                    samwise.into_val(&e),
+                    blnd_index.into_val(&e),
+                    blnd_bootstrap_amount.into_val(&e),
+                    pair_min_usdc.into_val(&e),
+                    duration.into_val(&e),
+                    pool.into_val(&e),
+                ],
+                sub_invokes: &[],
+            },
+        }])
+        .bb_start_bootstrap(
+            &samwise,
+            &blnd_index,
+            &blnd_bootstrap_amount,
+            &pair_min_usdc,
+            &duration,
+            &pool,
+        );
+    assert_eq!(e.auths()[0].0, samwise); // assert require_auth exists
+    let blnd_balance_1 = blnd_token.balance(&manager_client.address);
+    assert_eq!(blnd_balance_1, blnd_balance_0 - blnd_bootstrap_amount);
+    assert_eq!(
+        blnd_token.balance(&bootstrapper.address),
+        blnd_bootstrap_amount
+    );
+    let bootstrap = bootstrapper.get_bootstrap(&0);
+    assert_eq!(bootstrap.data.bootstrap_amount, blnd_bootstrap_amount);
+
     // frodo join bootstrap
     e.mock_all_auths();
-    bootstrapper.join(&frodo, &0, &usdc_balance);
+    bootstrapper.join(&frodo, &0, &usdc_balance_0);
 
     // claim bootstrap
     e.jump(duration + 1);
@@ -120,196 +165,162 @@ fn test_execute_bootstrapper_functions() {
         claim_amount,
         bootstrap.data.total_backstop_tokens * 800_0000 as i128 / 1_000_0000
     );
-    let bootstrap_id = 0;
 
-    blend_lockup_client
+    /***** SCOPE 0 *****/
+
+    // set manager (samwise) to scope 0
+    e.set_auths(&[]);
+    manager_client
         .mock_auths(&[MockAuth {
             address: &frodo,
             invoke: &MockAuthInvoke {
-                contract: &blend_lockup_client.address,
-                fn_name: &"bb_claim_bootstrap",
-                args: vec![&e, bootstrap_id.clone().into_val(&e)],
-                sub_invokes: &[MockAuthInvoke {
-                    contract: &bootstrapper.address,
-                    fn_name: &"claim",
-                    args: vec![
-                        &e,
-                        blend_lockup_client.address.clone().into_val(&e),
-                        blend_lockup_client.address.clone().into_val(&e),
-                        bootstrap_id.clone().into_val(&e),
-                    ],
-                    sub_invokes: &[
-                        MockAuthInvoke {
-                            contract: &contracts.backstop_token.address,
-                            fn_name: &"transfer",
-                            args: vec![
-                                &e,
-                                bootstrapper.address.clone().into_val(&e),
-                                blend_lockup_client.address.clone().into_val(&e),
-                                claim_amount.clone().into_val(&e),
-                            ],
-                            sub_invokes: &[],
-                        },
-                        MockAuthInvoke {
-                            contract: &contracts.backstop.address,
-                            fn_name: &"deposit",
-                            args: vec![
-                                &e,
-                                blend_lockup_client.address.clone().into_val(&e),
-                                pool.clone().into_val(&e),
-                                claim_amount.clone().into_val(&e),
-                            ],
-                            sub_invokes: &[MockAuthInvoke {
-                                contract: &contracts.backstop_token.address,
-                                fn_name: &"transfer",
-                                args: vec![
-                                    &e,
-                                    blend_lockup_client.address.clone().into_val(&e),
-                                    contracts.backstop.address.clone().into_val(&e),
-                                    claim_amount.clone().into_val(&e),
-                                ],
-                                sub_invokes: &[],
-                            }],
-                        },
-                    ],
-                }],
+                contract: &manager_client.address,
+                fn_name: &"set_manager",
+                args: vec![&e, samwise.into_val(&e), 0u32.into_val(&e)],
+                sub_invokes: &[],
             },
         }])
-        .bb_claim_bootstrap(&bootstrap_id);
+        .set_manager(&samwise, &0u32);
 
-    assert_eq!(
-        contracts
-            .backstop_token
-            .balance(&contracts.backstop.address),
-        backstop_token_balance + claim_amount
-    )
+    // assert scope is 0
+    let manager = manager_client.manager();
+    assert_eq!(0, manager.scope);
+    assert_eq!(samwise, manager.id);
+
+    // claim bootstrap - as manager
+    e.set_auths(&[]);
+    manager_client
+        .mock_auths(&[MockAuth {
+            address: &samwise,
+            invoke: &MockAuthInvoke {
+                contract: &manager_client.address,
+                fn_name: &"bb_claim_bootstrap",
+                args: vec![
+                    &e,
+                    samwise.into_val(&e),
+                    bootstrap.id.into_val(&e),
+                    contracts.backstop.address.into_val(&e),
+                ],
+                sub_invokes: &[],
+            },
+        }])
+        .bb_claim_bootstrap(&samwise, &bootstrap.id, &contracts.backstop.address);
+    assert_eq!(e.auths()[0].0, samwise); // assert require_auth exists
+    let backstop_balance_1 = contracts
+        .backstop
+        .user_balance(&pool, &manager_client.address);
+    // shares are 1-1 with backstop tokens
+    assert_eq!(backstop_balance_1.shares, claim_amount);
 }
 
 #[test]
 fn test_execute_bootstrapper_functions_cancelled() {
-    let e = Env::default();
-    e.budget().reset_unlimited();
+    let e = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    e.cost_estimate().budget().reset_unlimited();
     e.set_default_info();
+    // auths get reset and tested for each manager function
     e.mock_all_auths();
 
     let bombadil = Address::generate(&e);
     let frodo = Address::generate(&e);
-    let usdc_id = e.register_stellar_asset_contract(bombadil.clone());
-    let blnd_id = e.register_stellar_asset_contract(bombadil.clone());
-    let usdc_admin_client = StellarAssetClient::new(&e, &usdc_id);
-    let blnd_admin_client = StellarAssetClient::new(&e, &blnd_id);
-    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd_id, &usdc_id);
+    let samwise = Address::generate(&e);
+    let usdc = e.register_stellar_asset_contract_v2(bombadil.clone());
+    let blnd = e.register_stellar_asset_contract_v2(bombadil.clone());
+    let usdc_admin_client = StellarAssetClient::new(&e, &usdc.address());
+    let blnd_admin_client = StellarAssetClient::new(&e, &blnd.address());
+    let (contracts, pool) = create_blend_contracts(&e, &bombadil, &blnd.address(), &usdc.address());
     let bootstrapper = create_backstop_bootstrapper(&e, &contracts);
-    let (_, blend_lockup_client) = create_blend_lockup_wasm(
+    let blnd_index: u32 = 0;
+
+    // start manager (samwise) at scope 0
+    let (_, manager_client) = create_backstop_manager_wasm(
         &e,
         &frodo,
+        &samwise,
+        &0,
         &contracts.emitter.address,
-        &(e.ledger().timestamp() + 42 * 24 * 60 * 60),
         &bootstrapper.address,
+        &contracts.backstop_token.address,
+        &vec![&e, contracts.backstop.address.clone()],
+        &vec![&e, pool.clone()],
     );
 
-    // mint underlying tokens to the blend lockup contract
+    // mint underlying tokens to the backstop manager contract
     // create_blend_contracts sets up a comet LP with
     //  -> 10 BLND / share
     //  -> 0.25 USDC / share
-    let blnd_amount = &100_000_0000000;
-    let usdc_amount = &2500_0000000;
-    let blnd_index: u32 = 0;
-    blnd_admin_client.mint(&blend_lockup_client.address, blnd_amount);
-    usdc_admin_client.mint(&frodo, usdc_amount);
+    //  -> 1000 shares available to mint
+    let blnd_balance_0 = 100_000_0000000;
+    let usdc_balance_0 = 2500_0000000;
+    blnd_admin_client.mint(&manager_client.address, &blnd_balance_0);
+    usdc_admin_client.mint(&manager_client.address, &usdc_balance_0);
     let blnd_token = TokenClient::new(&e, &blnd_admin_client.address);
     let duration: u32 = 17280 + 1;
-    let min: i128 = 10_000_0000;
-    // create_bootstrap
-    println!("creating bootstrap");
+    let pair_min_usdc: i128 = 10_000_0000;
+
+    // create_bootstrap - as owner
+    let blnd_bootstrap_amount = blnd_balance_0;
     e.set_auths(&[]);
-    blend_lockup_client
+    manager_client
         .mock_auths(&[MockAuth {
             address: &frodo,
             invoke: &MockAuthInvoke {
-                contract: &blend_lockup_client.address.clone(),
+                contract: &manager_client.address.clone(),
                 fn_name: &"bb_start_bootstrap",
                 args: vec![
                     &e,
-                    blnd_index.clone().into_val(&e),
-                    blnd_amount.clone().into_val(&e),
-                    min.clone().into_val(&e),
-                    duration.clone().into_val(&e),
-                    pool.clone().into_val(&e),
+                    frodo.into_val(&e),
+                    blnd_index.into_val(&e),
+                    blnd_bootstrap_amount.into_val(&e),
+                    pair_min_usdc.into_val(&e),
+                    duration.into_val(&e),
+                    pool.into_val(&e),
                 ],
-                sub_invokes: &[MockAuthInvoke {
-                    contract: &bootstrapper.address,
-                    fn_name: &"bootstrap",
-                    args: vec![
-                        &e,
-                        BootstrapConfig {
-                            token_index: 0,
-                            bootstrapper: blend_lockup_client.address.clone(),
-                            amount: blnd_amount.clone(),
-                            pair_min: 10_000_0000,
-                            close_ledger: (e.ledger().timestamp() + 17280 + 1) as u32,
-                            pool: pool.clone(),
-                        }
-                        .into_val(&e),
-                    ],
-                    sub_invokes: &[MockAuthInvoke {
-                        contract: &blnd_token.address,
-                        fn_name: &"transfer",
-                        args: vec![
-                            &e,
-                            blend_lockup_client.address.clone().into_val(&e),
-                            bootstrapper.address.clone().into_val(&e),
-                            blnd_amount.into_val(&e),
-                        ],
-                        sub_invokes: &[],
-                    }],
-                }],
+                sub_invokes: &[],
             },
         }])
-        .bb_start_bootstrap(&blnd_index, &blnd_amount, &min, &duration, &pool);
-
+        .bb_start_bootstrap(
+            &frodo,
+            &blnd_index,
+            &blnd_bootstrap_amount,
+            &pair_min_usdc,
+            &duration,
+            &pool,
+        );
+    assert_eq!(e.auths()[0].0, frodo); // assert require_auth exists
+    let blnd_balance_1 = blnd_token.balance(&manager_client.address);
+    assert_eq!(blnd_balance_1, blnd_balance_0 - blnd_bootstrap_amount);
     assert_eq!(
-        blnd_token.balance(&bootstrapper.address).clone(),
-        blnd_amount.clone()
+        blnd_token.balance(&bootstrapper.address),
+        blnd_bootstrap_amount
     );
+    let bootstrap = bootstrapper.get_bootstrap(&0);
+    assert_eq!(bootstrap.data.bootstrap_amount, blnd_bootstrap_amount);
 
     // wait until bootstrap expires
     e.jump(duration + 1);
+
+    // assert scope is 0
+    let manager = manager_client.manager();
+    assert_eq!(0, manager.scope);
+    assert_eq!(samwise, manager.id);
+
+    // refund bootstrap - as manager
     e.set_auths(&[]);
     let bootstrap_id = 0;
-    blend_lockup_client
+    manager_client
         .mock_auths(&[MockAuth {
-            address: &frodo,
+            address: &samwise,
             invoke: &MockAuthInvoke {
-                contract: &blend_lockup_client.address,
+                contract: &manager_client.address,
                 fn_name: &"bb_refund_bootstrap",
-                args: vec![&e, bootstrap_id.clone().into_val(&e)],
-                sub_invokes: &[MockAuthInvoke {
-                    contract: &bootstrapper.address,
-                    fn_name: &"refund",
-                    args: vec![
-                        &e,
-                        blend_lockup_client.address.clone().into_val(&e),
-                        bootstrap_id.clone().into_val(&e),
-                    ],
-                    sub_invokes: &[MockAuthInvoke {
-                        contract: &contracts.backstop_token.address,
-                        fn_name: &"transfer",
-                        args: vec![
-                            &e,
-                            bootstrapper.address.clone().into_val(&e),
-                            blend_lockup_client.address.clone().into_val(&e),
-                            blnd_amount.clone().into_val(&e),
-                        ],
-                        sub_invokes: &[],
-                    }],
-                }],
+                args: vec![&e, samwise.into_val(&e), bootstrap_id.into_val(&e)],
+                sub_invokes: &[],
             },
         }])
-        .bb_refund_bootstrap(&bootstrap_id);
-
-    assert_eq!(
-        blnd_token.balance(&blend_lockup_client.address).clone(),
-        blnd_amount.clone()
-    )
+        .bb_refund_bootstrap(&samwise, &bootstrap_id);
+    assert_eq!(e.auths()[0].0, samwise); // assert require_auth exists
+    assert_eq!(blnd_token.balance(&manager_client.address), blnd_balance_0)
 }

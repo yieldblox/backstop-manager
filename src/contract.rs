@@ -3,13 +3,14 @@ use crate::{
         bootstrapper::{Bootstrap, BootstrapConfig, Client as BootstrapClient},
         comet::Client as CometClient,
     },
-    errors::BlendLockupError,
+    errors::BackstopManagerErrors,
     storage::{self, Manager},
 };
 use blend_contract_sdk::backstop::Client as BackstopClient;
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, panic_with_error,
+    token::TokenClient,
     unwrap::UnwrapOptimized,
     vec, Address, Env, IntoVal, Symbol, Vec,
 };
@@ -50,7 +51,7 @@ impl BackstopManager {
     ) {
         storage::set_owner(&e, &owner);
         if admin_scope > 2 {
-            panic_with_error!(&e, BlendLockupError::InvalidScope);
+            panic_with_error!(&e, BackstopManagerErrors::InvalidScope);
         }
         storage::set_manager(
             &e,
@@ -64,10 +65,10 @@ impl BackstopManager {
         storage::set_backstop_token(&e, backstop_token);
 
         if backstops.len() > MAX_VALID_LIST_LEN {
-            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+            panic_with_error!(&e, BackstopManagerErrors::ContractListOverMax);
         }
         if pools.len() > MAX_VALID_LIST_LEN {
-            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+            panic_with_error!(&e, BackstopManagerErrors::ContractListOverMax);
         }
         storage::set_valid_backstops(&e, &backstops);
         storage::set_valid_pools(&e, &pools);
@@ -81,14 +82,9 @@ impl BackstopManager {
         storage::get_owner(&e)
     }
 
-    /// Get admin
-    pub fn admin(e: Env) -> Address {
-        storage::get_owner(&e)
-    }
-
-    /// Get the status of an admin
-    pub fn admin_status(e: Env) -> bool {
-        storage::get_owner(&e) == storage::get_owner(&e)
+    /// Get manager
+    pub fn manager(e: Env) -> Manager {
+        storage::get_manager(&e)
     }
 
     /// Get the emitter contract
@@ -113,6 +109,21 @@ impl BackstopManager {
 
     /********** Owner **********/
 
+    /// (Only Owner) Transfer tokens from the manager contract to another address
+    ///
+    /// ### Arguments
+    /// * `token` - The address of the token to transfer
+    /// * `to` - The address to transfer the tokens to
+    /// * `amount` - The amount of tokens to transfer
+    pub fn transfer_token(e: Env, token: Address, to: Address, amount: i128) {
+        let owner = storage::get_owner(&e);
+        owner.require_auth();
+        storage::extend_instance(&e);
+
+        let token_client = TokenClient::new(&e, &token);
+        token_client.transfer(&e.current_contract_address(), &to, &amount);
+    }
+
     /// (Only Owner) Set the manager for the contract
     ///
     /// ### Arguments
@@ -124,7 +135,7 @@ impl BackstopManager {
         storage::extend_instance(&e);
 
         if scope > 2 {
-            panic_with_error!(&e, BlendLockupError::InvalidScope);
+            panic_with_error!(&e, BackstopManagerErrors::InvalidScope);
         }
 
         storage::set_manager(&e, &Manager { id: manager, scope });
@@ -151,7 +162,7 @@ impl BackstopManager {
         owner.require_auth();
         storage::extend_instance(&e);
         if backstops.len() > MAX_VALID_LIST_LEN {
-            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+            panic_with_error!(&e, BackstopManagerErrors::ContractListOverMax);
         }
         storage::set_valid_backstops(&e, &backstops);
     }
@@ -165,16 +176,31 @@ impl BackstopManager {
         owner.require_auth();
         storage::extend_instance(&e);
         if pools.len() > MAX_VALID_LIST_LEN {
-            panic_with_error!(&e, BlendLockupError::ContractListOverMax);
+            panic_with_error!(&e, BackstopManagerErrors::ContractListOverMax);
         }
         storage::set_valid_pools(&e, &pools);
     }
 
     /********** Manager **********/
 
+    /// (Manager, Low) Transfer tokens from the contract back to the owner
+    ///
+    /// ### Arguments
+    /// * `token` - The address of the token to transfer
+    /// * `to` - The address to transfer the tokens to
+    /// * `amount` - The amount of tokens to transfer
+    pub fn refund_token(e: Env, from: Address, token: Address, amount: i128) {
+        require_auth_with_scope(&e, from, 0);
+        storage::extend_instance(&e);
+
+        let owner = storage::get_owner(&e);
+        let token_client = TokenClient::new(&e, &token);
+        token_client.transfer(&e.current_contract_address(), &owner, &amount);
+    }
+
     /***** Backstop Interactions *****/
 
-    /// (Manager, Low) Claim backstop deposit emissions from a list of pools for the lockup
+    /// (Manager, Low) Claim backstop deposit emissions from a list of pools for the contract
     ///
     /// Returns the amount of BLND emissions claimed
     ///
@@ -197,7 +223,7 @@ impl BackstopManager {
         )
     }
 
-    /// (Manger, Medium) Deposit "amount" backstop tokens from the lockup into the backstop for "pool_address"
+    /// (Manger, Medium) Deposit "amount" backstop tokens from the contract into the backstop for "pool_address"
     ///
     /// Returns the number of backstop pool shares minted
     ///
@@ -241,7 +267,7 @@ impl BackstopManager {
         )
     }
 
-    /// (Manager, Medium) Queue deposited pool shares from the lockup for withdraw from a backstop of a pool
+    /// (Manager, Medium) Queue deposited pool shares from the contract for withdraw from a backstop of a pool
     ///
     /// Returns the created queue for withdrawal
     ///
@@ -268,7 +294,7 @@ impl BackstopManager {
         );
     }
 
-    /// (Manager, Medium) Dequeue a currently queued pool share withdraw for the lockup from the backstop of a pool
+    /// (Manager, Medium) Dequeue a currently queued pool share withdraw for the contract from the backstop of a pool
     ///
     /// ### Arguments
     /// * `from` - The caller of the function
@@ -293,7 +319,7 @@ impl BackstopManager {
         )
     }
 
-    /// (Manager, High) Withdraw shares from the lockup's withdraw queue for a backstop of a pool
+    /// (Manager, High) Withdraw shares from the contract's withdraw queue for a backstop of a pool
     ///
     /// Returns the amount of tokens returned
     ///
@@ -489,7 +515,7 @@ impl BackstopManager {
             .get(bootstrap_token_index)
         {
             Some(address) => address,
-            None => panic_with_error!(e, BlendLockupError::InvalidTokenIndex),
+            None => panic_with_error!(e, BackstopManagerErrors::InvalidTokenIndex),
         };
 
         let backstop_bootstrapper = storage::get_backstop_bootstrapper(&e);
@@ -540,14 +566,22 @@ fn require_auth_with_scope(e: &Env, from: Address, scope: u32) {
     }
     let manager = storage::get_manager(&e);
     if manager.id != from || manager.scope < scope {
-        panic_with_error!(&e, BlendLockupError::UnauthorizedError);
+        panic_with_error!(&e, BackstopManagerErrors::UnauthorizedError);
     }
 }
 
+/// Validate that the backstop and pool address are included in the valid lists
+///
+/// ### Arguments
+/// * `backstop` - The address of the backstop contract
+/// * `pool_address` - The address of the pool
+///
+/// ### Errors
+/// * InvalidContractAddress - The backstop or pool address is not included in the valid lists
 fn require_backstop_and_pool_valid(e: &Env, backstop: &Address, pool_address: &Address) {
     let backstops = storage::get_valid_backstops(&e);
     let pools = storage::get_valid_pools(&e);
     if !backstops.contains(backstop) || !pools.contains(pool_address) {
-        panic_with_error!(&e, BlendLockupError::InvalidContractAddress);
+        panic_with_error!(&e, BackstopManagerErrors::InvalidContractAddress);
     }
 }
