@@ -133,19 +133,19 @@ pub fn set_valid_backstops(e: &Env, backstop: &Vec<Address>) {
         .set::<Symbol, Vec<Address>>(&key, &backstop);
 }
 
-/// Get the backstop token address
+/// Get an array of all valid pools the vault can interact with
 pub fn get_valid_pools(e: &Env) -> Vec<Address> {
     let key = Symbol::new(e, POOLS_KEY);
     e.storage()
-        .persistent()
+        .instance()
         .get::<Symbol, Vec<Address>>(&key)
         .unwrap_optimized()
 }
 
-/// Set the backstop token address
+/// Set the valid pool addresses
 pub fn set_valid_pools(e: &Env, pools: &Vec<Address>) {
     let key = Symbol::new(e, POOLS_KEY);
     e.storage()
-        .persistent()
+        .instance()
         .set::<Symbol, Vec<Address>>(&key, &pools);
 }
