@@ -115,6 +115,7 @@ fn test_execute_backstop_functions() {
     e.jump(ONE_DAY_LEDGERS);
 
     // claim - as manager
+    let min_lp_amount = 0_1000000;
     e.set_auths(&[]);
     manager_client
         .mock_auths(&[MockAuth {
@@ -127,11 +128,12 @@ fn test_execute_backstop_functions() {
                     samwise.into_val(&e),
                     contracts.backstop.address.into_val(&e),
                     pool.into_val(&e),
+                    min_lp_amount.into_val(&e),
                 ],
                 sub_invokes: &[],
             },
         }])
-        .b_claim(&samwise, &contracts.backstop.address, &pool);
+        .b_claim(&samwise, &contracts.backstop.address, &pool, &min_lp_amount);
     assert_eq!(e.auths()[0].0, samwise); // assert require_auth exists
     let backstop_bal_1 = contracts
         .backstop
@@ -461,11 +463,12 @@ fn test_execute_backstop_functions() {
                     samwise.into_val(&e),
                     contracts.backstop.address.into_val(&e),
                     pool.into_val(&e),
+                    min_lp_amount.into_val(&e),
                 ],
                 sub_invokes: &[],
             },
         }])
-        .b_claim(&samwise, &contracts.backstop.address, &pool);
+        .b_claim(&samwise, &contracts.backstop.address, &pool, &min_lp_amount);
     assert_eq!(e.auths()[0].0, samwise); // assert require_auth exists
     let backstop_bal_6 = contracts
         .backstop

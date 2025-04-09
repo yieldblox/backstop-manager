@@ -208,10 +208,17 @@ impl BackstopManager {
     /// * `from` - The caller of the function
     /// * `backstop` - The address of the backstop contract
     /// * `pool_address` - The address of the pool to claim from
+    /// * `min_lp_tokens_out` - The minimum amount of backstop tokens to mint with emissions
     ///
     /// ### Errors
     /// If an invalid pool address is included
-    pub fn b_claim(e: Env, from: Address, backstop: Address, pool_address: Address) -> i128 {
+    pub fn b_claim(
+        e: Env,
+        from: Address,
+        backstop: Address,
+        pool_address: Address,
+        min_lp_tokens_out: i128,
+    ) -> i128 {
         require_auth_with_scope(&e, from, 0);
         require_backstop_and_pool_valid(&e, &backstop, &pool_address);
         storage::extend_instance(&e);
@@ -219,7 +226,7 @@ impl BackstopManager {
         BackstopClient::new(&e, &backstop).claim(
             &e.current_contract_address(),
             &vec![&e, pool_address],
-            &e.current_contract_address(),
+            &min_lp_tokens_out,
         )
     }
 
