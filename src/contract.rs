@@ -424,7 +424,7 @@ impl BackstopManager {
     /// * `from` - The caller of the function
     /// * `bootstrap_id` - The id of the bootstrapper
     /// * `backstop` - The address of the backstop the bootstrap is for
-    pub fn bb_claim_bootstrap(e: Env, from: Address, bootstrap_id: u32, backstop: Address) {
+    pub fn bb_claim_bootstrap(e: Env, from: Address, bootstrap_id: u32, backstop: Address) -> i128 {
         require_auth_with_scope(&e, from, 0);
         storage::extend_instance(&e);
 
@@ -477,7 +477,7 @@ impl BackstopManager {
             }),
         ]);
 
-        backstop_bootstrapper_client.claim(&e.current_contract_address(), &bootstrap_id);
+        backstop_bootstrapper_client.claim(&e.current_contract_address(), &bootstrap_id)
     }
 
     /// (Manager, Low) Refunds a cancelled backstop bootstrapping
@@ -485,14 +485,14 @@ impl BackstopManager {
     /// ### Arguments
     /// * `from` - The caller of the function
     /// * `bootstrap_id` - The id of the bootstrapper
-    pub fn bb_refund_bootstrap(e: Env, from: Address, bootstrap_id: u32) {
+    pub fn bb_refund_bootstrap(e: Env, from: Address, bootstrap_id: u32) -> i128 {
         require_auth_with_scope(&e, from, 0);
         storage::extend_instance(&e);
 
         let backstop_bootstrapper_client =
             BootstrapClient::new(&e, &storage::get_backstop_bootstrapper(&e));
 
-        backstop_bootstrapper_client.refund(&e.current_contract_address(), &bootstrap_id);
+        backstop_bootstrapper_client.refund(&e.current_contract_address(), &bootstrap_id)
     }
 
     /// (Manager, High) Creates a Backstop Bootstrapping with BLND
@@ -512,7 +512,7 @@ impl BackstopManager {
         pair_min: i128,
         duration: u32,
         pool_address: Address,
-    ) {
+    ) -> u32 {
         require_auth_with_scope(&e, from, 2);
         storage::extend_instance(&e);
 
@@ -550,7 +550,7 @@ impl BackstopManager {
             pair_min,
             pool: pool_address,
             token_index: bootstrap_token_index,
-        });
+        })
     }
 }
 
