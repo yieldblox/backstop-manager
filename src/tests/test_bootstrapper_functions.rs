@@ -114,7 +114,7 @@ fn test_execute_bootstrapper_functions() {
 
     // create_bootstrap - as manager
     e.set_auths(&[]);
-    manager_client
+    let id = manager_client
         .mock_auths(&[MockAuth {
             address: &samwise,
             invoke: &MockAuthInvoke {
@@ -141,6 +141,7 @@ fn test_execute_bootstrapper_functions() {
             &pool,
         );
     assert_eq!(e.auths()[0].0, samwise); // assert require_auth exists
+    assert_eq!(id, 0);
     let blnd_balance_1 = blnd_token.balance(&manager_client.address);
     assert_eq!(blnd_balance_1, blnd_balance_0 - blnd_bootstrap_amount);
     assert_eq!(
@@ -189,7 +190,7 @@ fn test_execute_bootstrapper_functions() {
 
     // claim bootstrap - as manager
     e.set_auths(&[]);
-    manager_client
+    let actual_claim_amount = manager_client
         .mock_auths(&[MockAuth {
             address: &samwise,
             invoke: &MockAuthInvoke {
@@ -210,6 +211,7 @@ fn test_execute_bootstrapper_functions() {
         .backstop
         .user_balance(&pool, &manager_client.address);
     // shares are 1-1 with backstop tokens
+    assert_eq!(actual_claim_amount, claim_amount);
     assert_eq!(backstop_balance_1.shares, claim_amount);
 }
 
@@ -310,7 +312,7 @@ fn test_execute_bootstrapper_functions_cancelled() {
     // refund bootstrap - as manager
     e.set_auths(&[]);
     let bootstrap_id = 0;
-    manager_client
+    let refund_amount = manager_client
         .mock_auths(&[MockAuth {
             address: &samwise,
             invoke: &MockAuthInvoke {
@@ -322,5 +324,6 @@ fn test_execute_bootstrapper_functions_cancelled() {
         }])
         .bb_refund_bootstrap(&samwise, &bootstrap_id);
     assert_eq!(e.auths()[0].0, samwise); // assert require_auth exists
+    assert_eq!(refund_amount, blnd_bootstrap_amount);
     assert_eq!(blnd_token.balance(&manager_client.address), blnd_balance_0)
 }
