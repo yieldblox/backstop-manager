@@ -36,7 +36,6 @@ fn test_execute_backstop_functions() {
         &frodo,
         &samwise,
         &0,
-        &contracts.emitter.address,
         &bootstrapper.address,
         &contracts.backstop_token.address,
         &vec![&e, contracts.backstop.address.clone()],

@@ -40,7 +40,6 @@ fn test_execute_comet_functions() {
         &frodo,
         &samwise,
         &2,
-        &contracts.emitter.address,
         &bootstrapper.address,
         &contracts.backstop_token.address,
         &vec![&e, contracts.backstop.address.clone()],
@@ -61,7 +60,6 @@ fn test_execute_comet_functions() {
     let manager = manager_client.manager();
     assert_eq!(manager.id, samwise);
     assert_eq!(manager.scope, 2);
-    assert_eq!(manager_client.emitter(), contracts.emitter.address);
     assert_eq!(manager_client.backstop_bootstrapper(), bootstrapper.address);
     assert_eq!(
         manager_client.backstops(),

@@ -29,7 +29,6 @@ impl BackstopManager {
     /// ### Arguments
     /// * owner - The address of the owner of the funds
     /// * manager - The address of the manager of the funds
-    /// * emitter - The address of the emitter contract
     /// * bootstrapper - The address of the backstop bootstrapper contract
     /// * backstop_token - The address of the backstop token the manager can interact with. This is fixed
     ///                    as the backstop manager only supports the BLND-USDC LP token as the backstop token.
@@ -43,7 +42,6 @@ impl BackstopManager {
         owner: Address,
         manager: Address,
         admin_scope: u32,
-        emitter: Address,
         bootstrapper: Address,
         backstop_token: Address,
         backstops: Vec<Address>,
@@ -60,7 +58,6 @@ impl BackstopManager {
                 scope: admin_scope,
             },
         );
-        storage::set_emitter(&e, &emitter);
         storage::set_backstop_bootstrapper(&e, bootstrapper);
         storage::set_backstop_token(&e, backstop_token);
 
@@ -85,11 +82,6 @@ impl BackstopManager {
     /// Get manager
     pub fn manager(e: Env) -> Manager {
         storage::get_manager(&e)
-    }
-
-    /// Get the emitter contract
-    pub fn emitter(e: Env) -> Address {
-        storage::get_emitter(&e)
     }
 
     /// Get the backstop bootstrapper contract
