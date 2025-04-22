@@ -19,7 +19,6 @@ mod contract {
 /// ### Arguments
 /// * owner - The address of the owner of the funds
 /// * manager - The address of the manager of the funds
-/// * emitter - The address of the emitter contract
 /// * bootstrapper - The address of the backstop bootstrapper contract
 /// * backstop_token - The address of the backstop token the manager can interact with. This is fixed
 ///                    as the backstop manager only supports the BLND-USDC LP token as the backstop token.
@@ -30,7 +29,6 @@ pub fn create_backstop_manager_wasm<'a>(
     owner: &Address,
     manager: &Address,
     admin_scope: &u32,
-    emitter: &Address,
     bootstrapper: &Address,
     backstop_token: &Address,
     backstops: &Vec<Address>,
@@ -42,7 +40,6 @@ pub fn create_backstop_manager_wasm<'a>(
             owner,
             manager,
             admin_scope,
-            emitter,
             bootstrapper,
             backstop_token,
             backstops.clone(),

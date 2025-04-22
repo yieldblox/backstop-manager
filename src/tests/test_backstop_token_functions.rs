@@ -37,7 +37,6 @@ fn test_execute_comet_functions() {
         &frodo,
         &samwise,
         &1,
-        &contracts.emitter.address,
         &bootstrapper.address,
         &contracts.backstop_token.address,
         &vec![&e, contracts.backstop.address.clone()],

@@ -24,7 +24,6 @@ const LEDGER_THRESHOLD: u32 = LEDGER_BUMP - 20 * ONE_DAY_LEDGERS;
 
 const OWNER_KEY: &str = "Owner";
 const MANAGER_KEY: &str = "Manager";
-const EMITTER_KEY: &str = "Emit";
 const BACKSTOPS_KEY: &str = "Bstop";
 const POOLS_KEY: &str = "Pools";
 const BACKSTOP_BOOTSTRAPPER_KEY: &str = "BstopBoot";
@@ -69,21 +68,6 @@ pub fn set_manager(e: &Env, manager: &Manager) {
     e.storage()
         .instance()
         .set::<Symbol, Manager>(&Symbol::new(e, MANAGER_KEY), manager);
-}
-
-/// Get the emitter address
-pub fn get_emitter(e: &Env) -> Address {
-    e.storage()
-        .instance()
-        .get::<Symbol, Address>(&Symbol::new(e, EMITTER_KEY))
-        .unwrap_optimized()
-}
-
-/// Set the emitter address
-pub fn set_emitter(e: &Env, emitter: &Address) {
-    e.storage()
-        .instance()
-        .set::<Symbol, Address>(&Symbol::new(e, EMITTER_KEY), &emitter);
 }
 
 /// Get the backstop bootstrapper address
